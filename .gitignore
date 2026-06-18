@@ -216,3 +216,6 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# AI Investment Buddy runtime state (portfolio, trades, journal, cache)
+/data/
