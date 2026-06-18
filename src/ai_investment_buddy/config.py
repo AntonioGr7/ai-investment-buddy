@@ -79,6 +79,16 @@ class Settings:
     macro_provider: str = os.getenv("AIB_MACRO_PROVIDER", "yfinance")
     market_news_provider: str = os.getenv("AIB_MARKET_NEWS_PROVIDER", "rss")
 
+    # --- State snapshots ---
+    # After each committed run, auto-export a portable snapshot of all state.
+    auto_export: bool = os.getenv("AIB_AUTO_EXPORT", "1").lower() not in (
+        "0", "false", "no", "off",
+    )
+
+    @property
+    def snapshot_path(self) -> Path:
+        return Path(os.getenv("AIB_SNAPSHOT_PATH", str(REPO_ROOT / "aib-state.json")))
+
     @property
     def anthropic_api_key(self) -> str | None:
         return os.getenv("ANTHROPIC_API_KEY")

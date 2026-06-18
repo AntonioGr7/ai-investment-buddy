@@ -12,7 +12,7 @@ from ..brain import screener
 from ..brain.decide import DecisionEngine
 from ..config import SETTINGS
 from ..data import get_providers
-from ..memory import Journal, MemoryToolkit, store
+from ..memory import Journal, MemoryToolkit, snapshot, store
 from ..memory.portfolio import Portfolio
 from ..models import (
     Decision,
@@ -71,6 +71,18 @@ def _portfolio_state(pf: Portfolio, prices: dict[str, float]) -> dict:
         "n_positions": len(pf.positions),
         "positions": positions,
     }
+
+
+def _auto_export(progress) -> None:
+    """Write a portable snapshot of all state after a committed run."""
+    if not SETTINGS.auto_export:
+        return
+    try:
+        path = SETTINGS.snapshot_path
+        snapshot.export_state(path)
+        progress(f"Auto-exported state snapshot → {path}")
+    except Exception as e:
+        progress(f"(auto-export skipped: {e})")
 
 
 def _ensure_prices(providers, prices: dict[str, float], tickers: list[str]) -> None:
@@ -211,6 +223,7 @@ def run_daily(
         benchmarks=current_benchmarks,
     )
     progress(f"Recorded NAV ${nav_after:,.2f}.")
+    _auto_export(progress)
 
     return RunResult(
         as_of=as_of,
@@ -283,6 +296,7 @@ def commit(dry: RunResult, on_progress=None) -> RunResult:
         benchmarks=current_benchmarks,
     )
     progress(f"Recorded NAV ${nav_after:,.2f}.")
+    _auto_export(progress)
 
     dry.trades = trades
     dry.prices = prices
