@@ -42,6 +42,9 @@ class Journal:
                 strategy.market_thesis.strip() or "_(none)_",
                 "",
             ]
+            if getattr(strategy, "sector_read", ""):
+                lines += ["## Sector read (overreaction vs value trap)",
+                          strategy.sector_read.strip(), ""]
 
         if assessments:
             lines += ["## Analyst valuations", ""]
@@ -77,6 +80,44 @@ class Journal:
         """Return the text of the most recent ``n`` daily entries, oldest first."""
         files = sorted(JOURNAL_DIR.glob("*.md"))
         return [f.read_text() for f in files[-n:]]
+
+    # --- Market-wide investor notes (from the feedback dialogue) ---
+    def _investor_notes_path(self):
+        return JOURNAL_DIR / "investor_notes.md"
+
+    def append_investor_note(self, text: str, as_of: date) -> None:
+        """Append a durable market-wide note from the investor dialogue. Always
+        injected into future strategist + PM prompts."""
+        text = text.strip()
+        if not text:
+            return
+        JOURNAL_DIR.mkdir(parents=True, exist_ok=True)
+        p = self._investor_notes_path()
+        prior = p.read_text() if p.exists() else "# Investor notes\n"
+        p.write_text(prior.rstrip() + f"\n\n- [{as_of.isoformat()}] {text}\n")
+
+    def read_investor_notes(self) -> str:
+        p = self._investor_notes_path()
+        return p.read_text() if p.exists() else ""
+
+    def latest_strategy(self) -> tuple[str, str]:
+        """Best-effort (regime, strategist thesis) from the most recent entry, so
+        an on-demand valuation can borrow the last known market context. Empty
+        strings if there is no journal yet."""
+        files = sorted(JOURNAL_DIR.glob("*.md"))
+        if not files:
+            return "", ""
+        text = files[-1].read_text()
+        regime = ""
+        for line in text.splitlines():
+            if line.startswith("**Regime:**"):
+                regime = line.split("**Regime:**", 1)[1].strip()
+                break
+        thesis = ""
+        if "## Strategist read" in text:
+            after = text.split("## Strategist read", 1)[1]
+            thesis = after.split("\n## ", 1)[0].strip()
+        return regime, thesis
 
     # --- Per-ticker theses ---
     def load_theses(self) -> dict[str, dict]:

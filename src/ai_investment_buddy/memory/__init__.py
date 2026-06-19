@@ -3,6 +3,6 @@
 from .journal import Journal
 from .portfolio import Portfolio
 from .tools import MemoryToolkit
-from . import snapshot, store
+from . import snapshot, store, valuations
 
-__all__ = ["Journal", "Portfolio", "MemoryToolkit", "snapshot", "store"]
+__all__ = ["Journal", "Portfolio", "MemoryToolkit", "snapshot", "store", "valuations"]

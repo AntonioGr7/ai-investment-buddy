@@ -8,11 +8,12 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 
-from ..brain import screener
+from .. import audit
+from ..brain import screener, sectors
 from ..brain.decide import DecisionEngine
 from ..config import SETTINGS
 from ..data import get_providers
-from ..memory import Journal, MemoryToolkit, snapshot, store
+from ..memory import Journal, MemoryToolkit, snapshot, store, valuations
 from ..memory.portfolio import Portfolio
 from ..models import (
     Decision,
@@ -23,6 +24,7 @@ from ..models import (
     ValuationAssessment,
 )
 from ..universe import get_universe
+from ..watchlist import load_watchlist
 from .benchmark import performance_summary
 from .execute import execute
 
@@ -97,6 +99,7 @@ def run_daily(
     as_of: date | None = None,
     dry_run: bool = False,
     on_progress=None,
+    force_revaluation: bool = False,
 ) -> RunResult:
     as_of = as_of or datetime.now(timezone.utc).date()
     log: list[str] = []
@@ -114,6 +117,16 @@ def run_daily(
     tickers = [c["ticker"] for c in universe]
     meta = {c["ticker"]: c for c in universe}
 
+    watchlist = load_watchlist()
+    if watchlist:
+        progress(
+            f"Watchlist: {len(watchlist)} favorite(s) always deep-dived "
+            f"({', '.join(watchlist)})."
+        )
+    # Pull price history for any watchlist name outside the index universe too,
+    # so favorites still get technicals.
+    download_tickers = list(dict.fromkeys(tickers + watchlist))
+
     progress("Sampling macro snapshot…")
     macro = providers.macro.snapshot()
 
@@ -121,22 +134,41 @@ def run_daily(
     market_news = providers.market_news.market_digest(days=4, per_feed=5)
     progress(f"Pulled {len(market_news)} market/macro headlines.")
 
-    progress(f"Downloading price history for {len(tickers)} tickers…")
-    history = providers.prices.history(tickers, lookback_days=260)
+    progress(f"Downloading price history for {len(download_tickers)} tickers…")
+    history = providers.prices.history(download_tickers, lookback_days=260)
     metrics = screener.compute_metrics(history, meta)
     progress(f"Computed technicals for {len(metrics)} tickers.")
 
+    # Sector scan: bottom-up (our constituents) + top-down sector-ETF performance
+    # (market-cap-weighted, Finviz-style), to find the punished groups so we
+    # deliberately hunt where the market may be overreacting.
+    etf_perf = sectors.fetch_sector_performance(providers.prices)
+    sector_stats = sectors.scan_sectors(metrics, etf_perf=etf_perf)
+    punished = sectors.punished_sectors(sector_stats)
+    sector_scan = sectors.format_sector_scan(sector_stats)
+    if punished:
+        progress(f"Sector scan: most punished → {', '.join(punished)}.")
+
     holdings = list(portfolio.positions.keys())
-    shortlist_tickers = screener.screen(metrics, holdings, SETTINGS.shortlist_size)
+    shortlist_tickers = screener.screen(
+        metrics, holdings, SETTINGS.shortlist_size,
+        watchlist=watchlist, punished=punished,
+    )
     progress(
         f"Screened to {len(shortlist_tickers)} candidates "
-        f"({len(holdings)} current holdings included). Enriching with fundamentals + news…"
+        f"({len(holdings)} holdings + {len(watchlist)} watchlist included). "
+        f"Enriching with fundamentals + news…"
     )
     shortlist = screener.enrich(shortlist_tickers, metrics, providers)
 
+    # Audit trail: dump the raw news + sector map the agent read so it's inspectable.
+    audit.write_news(as_of, macro, market_news, shortlist, sector_scan)
+    if SETTINGS.write_audit:
+        progress("Saved news + sector map the agent read → data/news/.")
+
     # Prices for valuation.
     prices = {t: td.price for t, td in metrics.items() if td.price}
-    _ensure_prices(providers, prices, holdings)
+    _ensure_prices(providers, prices, holdings + watchlist)
 
     nav_history = store.load_nav_history()
     current_benchmarks = {
@@ -149,6 +181,7 @@ def run_daily(
     journal = Journal()
     toolkit = MemoryToolkit()
     narrative = toolkit.read_narrative()
+    investor_notes = journal.read_investor_notes()
     recent = journal.recent_entries(5)
     theses = journal.load_theses()
     state = _portfolio_state(portfolio, prices)
@@ -160,12 +193,16 @@ def run_daily(
         portfolio_state=state,
         macro=macro,
         shortlist=shortlist,
+        sector_scan=sector_scan,
         recent_journal=recent,
         theses=theses,
         performance=perf,
         market_news=market_news,
         holdings=holdings,
+        watchlist=watchlist,
         narrative=narrative,
+        investor_notes=investor_notes,
+        force_revaluation=force_revaluation,
         toolkit=toolkit,
         on_progress=progress,
     )
@@ -175,8 +212,22 @@ def run_daily(
         f"target cash {decision.target_cash_weight:.0%}."
     )
 
+    # Valuations + reasoning are ANALYSIS outputs — recorded on every run (dry
+    # included), independent of whether we trade. Portfolio/ledger/journal below
+    # are state and only change on a committed run.
+    regime = brain.strategy.regime if brain.strategy else ""
+    headlines = {td.ticker.upper(): td.headlines for td in shortlist}
+    n_val = valuations.save_many(brain.assessments, as_of, regime, headlines)
+    progress(f"Stored {n_val} fresh valuation(s) → data/valuations/.")
+    if valuations.write_board():
+        progress("Updated market opportunity board → data/opportunities.md.")
+    audit.write_reasoning(as_of, brain.strategy, brain.assessments, decision)
+    if SETTINGS.write_audit:
+        progress(f"Wrote full reasoning → data/logs/{as_of.isoformat()}-reasoning.md.")
+
     if dry_run:
-        progress("Dry run — no state changed.")
+        progress("Dry run — no trades executed; analysis, valuations & reasoning recorded.")
+        audit.write_log(as_of, log)
         return RunResult(
             as_of=as_of,
             portfolio=portfolio,
@@ -203,6 +254,7 @@ def run_daily(
     store.append_trades(trades)
     journal.record_day(decision, brain.strategy, brain.assessments)
     journal.update_theses(decision)
+    # (valuations + reasoning already recorded above, before the dry-run gate.)
 
     progress("Consolidating long-horizon memory narrative…")
     try:
@@ -224,6 +276,7 @@ def run_daily(
     )
     progress(f"Recorded NAV ${nav_after:,.2f}.")
     _auto_export(progress)
+    audit.write_log(as_of, log)
 
     return RunResult(
         as_of=as_of,
@@ -268,6 +321,7 @@ def commit(dry: RunResult, on_progress=None) -> RunResult:
     journal = Journal()
     journal.record_day(dry.decision, dry.strategy, dry.assessments)
     journal.update_theses(dry.decision)
+    # Valuations + reasoning were already recorded during the dry analysis pass.
 
     progress("Consolidating long-horizon memory narrative…")
     try:
@@ -297,6 +351,7 @@ def commit(dry: RunResult, on_progress=None) -> RunResult:
     )
     progress(f"Recorded NAV ${nav_after:,.2f}.")
     _auto_export(progress)
+    audit.write_log(dry.as_of, dry.log)
 
     dry.trades = trades
     dry.prices = prices

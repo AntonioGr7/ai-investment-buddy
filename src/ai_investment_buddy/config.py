@@ -20,6 +20,10 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 DATA_DIR = Path(os.getenv("AIB_DATA_DIR", REPO_ROOT / "data"))
 JOURNAL_DIR = DATA_DIR / "journal"
 CACHE_DIR = DATA_DIR / "cache"
+# Audit trail (the agent's step log + the raw news it read). Diagnostic scratch:
+# excluded from state snapshots and safe to delete anytime.
+LOGS_DIR = DATA_DIR / "logs"
+NEWS_DIR = DATA_DIR / "news"
 
 
 @dataclass(frozen=True)
@@ -63,6 +67,36 @@ class Settings:
     # make the quant shortlist (the AI must be able to reconsider what it owns).
     always_review_holdings: bool = True
 
+    # How the quant shortlist is split across buckets (fractions of shortlist_size).
+    # A *balanced* mix so we surface beaten-down value (oversold + punished-sector
+    # names) alongside trend/news, instead of drowning contrarian setups in
+    # momentum noise. momentum=trend leaders, movers=today's news-driven jumps,
+    # oversold=deepest drawdowns, sector=names inside the most-punished sectors.
+    screener_mix: dict[str, float] = field(
+        default_factory=lambda: {
+            "momentum": 0.30,
+            "movers": 0.20,
+            "oversold": 0.25,
+            "sector": 0.25,
+        }
+    )
+    # How many of the worst-performing sectors count as "punished" (the sector
+    # bucket fishes inside these).
+    punished_sector_count: int = 4
+
+    # Max tool-use rounds for the analyst's agentic valuation loop (it calls the
+    # DCF / reverse-DCF / exit-multiple calculators, then submits). Caps cost.
+    analyst_max_iters: int = 6
+
+    # --- Valuation freshness ---
+    # Don't re-run a full valuation on a name assessed within this many days IF
+    # nothing material changed (no new headlines, price hasn't moved much, and no
+    # investor feedback challenged the thesis). `aib run --force` overrides.
+    valuation_ttl_days: int = 5
+    # A price move beyond this (fraction) since the last valuation forces a fresh
+    # look — the upside vs fair value has materially changed.
+    revaluation_price_move: float = 0.10
+
     # --- Risk guardrails (the AI is asked to respect these; execution enforces) ---
     max_position_weight: float = 0.20  # no single name above 20% of NAV
     min_trade_value: float = 250.0  # ignore dust trades
@@ -82,6 +116,12 @@ class Settings:
     # --- State snapshots ---
     # After each committed run, auto-export a portable snapshot of all state.
     auto_export: bool = os.getenv("AIB_AUTO_EXPORT", "1").lower() not in (
+        "0", "false", "no", "off",
+    )
+
+    # Write a per-run audit trail (step log + raw news read) under data/logs and
+    # data/news. Purely diagnostic; never affects decisions or snapshots.
+    write_audit: bool = os.getenv("AIB_AUDIT", "1").lower() not in (
         "0", "false", "no", "off",
     )
 

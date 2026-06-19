@@ -17,9 +17,11 @@ Fundamentals and news are attached only to this shortlist (see ``enrich``).
 from __future__ import annotations
 
 import math
+from itertools import zip_longest
 
 import pandas as pd
 
+from ..config import SETTINGS
 from ..models import TickerData
 
 
@@ -59,6 +61,12 @@ def compute_metrics(
         dma50 = float(closes.iloc[-50:].mean()) if len(closes) >= 50 else None
         dma200 = float(closes.iloc[-200:].mean()) if len(closes) >= 200 else None
 
+        # Drawdown from the trailing-1y high — the contrarian signal. A name down
+        # hard from its high is one the market is punishing, even if it never
+        # shows up as a momentum leader or a single-day mover.
+        hi = float(closes.iloc[-252:].max()) if len(closes) else last
+        drawdown = round((last / hi - 1) * 100, 1) if hi else None
+
         m = meta.get(ticker, {})
         out[ticker] = TickerData(
             ticker=ticker,
@@ -73,6 +81,7 @@ def compute_metrics(
             above_50dma=(last > dma50) if dma50 else None,
             above_200dma=(last > dma200) if dma200 else None,
             vol_ratio=vol_ratio,
+            drawdown_pct=drawdown,
         )
     return out
 
@@ -93,41 +102,81 @@ def screen(
     metrics: dict[str, TickerData],
     holdings: list[str],
     size: int,
+    watchlist: list[str] | None = None,
+    punished: list[str] | None = None,
 ) -> list[str]:
-    """Return the shortlist of tickers (holdings always included)."""
+    """Return the shortlist of tickers from a *balanced* set of buckets.
+
+    The universe is all S&P 500 + Nasdaq-100 names, so every candidate is already
+    large and liquid — no junk floor needed. We deliberately blend four lenses so
+    contrarian setups are not drowned out by trend/news:
+
+      - momentum  — trend leaders (what is working),
+      - movers    — today's biggest news-driven jumps,
+      - oversold  — the deepest drawdowns from their 1y high (what the market is
+                    punishing — the SaaS-selloff bucket),
+      - sector    — names inside the most beaten-down *sectors* (group repricing).
+
+    Holdings and the user's watchlist are always carried through on top: the AI
+    must be able to reconsider what it owns, and the watchlist is the user's
+    explicit "always look at these" set."""
+    watchlist = watchlist or []
+    punished = punished or []
+    always = list(dict.fromkeys(list(holdings) + watchlist))
     if not metrics:
-        return list(holdings)
+        return always
 
     ranked = list(metrics.values())
+    mix = SETTINGS.screener_mix
+
+    def n_for(bucket: str) -> int:
+        return max(1, round(mix.get(bucket, 0.0) * size))
 
     # Bucket 1: momentum leaders.
     momentum = sorted(ranked, key=_momentum_score, reverse=True)
-    leaders = [td.ticker for td in momentum[: size]]
+    leaders = [td.ticker for td in momentum[: n_for("momentum")]]
 
     # Bucket 2: biggest absolute daily movers (news-driven), weighted by volume.
     movers = sorted(
-        ranked,
-        key=lambda td: abs(td.change_pct or 0) * (td.vol_ratio or 1),
-        reverse=True,
+        ranked, key=lambda td: abs(td.change_pct or 0) * (td.vol_ratio or 1), reverse=True
     )
-    mover_tickers = [td.ticker for td in movers[: size // 2]]
+    mover_tickers = [td.ticker for td in movers[: n_for("movers")]]
 
-    # Blend: alternate leaders/movers for diversity, then top up to size.
+    # Bucket 3: oversold — deepest drawdowns from the trailing high (most negative
+    # first). Tie-break on worst 3m so a slow multi-month bleed scores too.
+    oversold = sorted(
+        (td for td in ranked if td.drawdown_pct is not None),
+        key=lambda td: (td.drawdown_pct, td.ret_3m if td.ret_3m is not None else 0),
+    )
+    oversold_tickers = [td.ticker for td in oversold[: n_for("oversold")]]
+
+    # Bucket 4: the most beaten-down names *within* the punished sectors.
+    punished_set = set(punished)
+    in_punished = sorted(
+        (td for td in ranked if (td.sector or "") in punished_set
+         and td.drawdown_pct is not None),
+        key=lambda td: td.drawdown_pct,
+    )
+    sector_tickers = [td.ticker for td in in_punished[: n_for("sector")]]
+
+    # Interleave the buckets so the shortlist stays diverse, then top up to size.
     shortlist: list[str] = []
-    for a, b in zip(leaders, mover_tickers):
-        for t in (a, b):
+    buckets = [leaders, mover_tickers, oversold_tickers, sector_tickers]
+    for row in zip_longest(*buckets):
+        for t in row:
+            if t and t not in shortlist:
+                shortlist.append(t)
+    for bucket in buckets:  # any leftovers if interleave fell short
+        for t in bucket:
             if t not in shortlist:
                 shortlist.append(t)
-    for t in leaders + mover_tickers:
-        if t not in shortlist:
-            shortlist.append(t)
 
     shortlist = shortlist[:size]
 
-    # Holdings are always carried through (the AI must be able to sell/add).
-    for h in holdings:
-        if h not in shortlist:
-            shortlist.append(h)
+    # Holdings + watchlist are always carried through.
+    for t in always:
+        if t not in shortlist:
+            shortlist.append(t)
 
     return shortlist
 

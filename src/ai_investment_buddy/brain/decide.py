@@ -17,7 +17,7 @@ from ..models import (
     ValuationAssessment,
 )
 from .consolidate import update_narrative
-from .graph import build_graph
+from .graph import assess_ticker, build_graph
 from .llm import LLMClient, get_llm_client
 
 
@@ -39,12 +39,16 @@ class DecisionEngine:
         portfolio_state: dict,
         macro: MacroSnapshot,
         shortlist: list[TickerData],
+        sector_scan: str,
         recent_journal: list[str],
         theses: dict[str, dict],
         performance: str,
         market_news: list[dict] | None = None,
         holdings: list[str] | None = None,
+        watchlist: list[str] | None = None,
         narrative: str = "",
+        investor_notes: str = "",
+        force_revaluation: bool = False,
         toolkit: MemoryToolkit | None = None,
         on_progress=None,
     ) -> BrainResult:
@@ -53,12 +57,16 @@ class DecisionEngine:
             "macro": macro,
             "market_news": market_news or [],
             "shortlist": shortlist,
+            "sector_scan": sector_scan,
             "holdings": holdings or [p["ticker"] for p in portfolio_state.get("positions", [])],
+            "watchlist": watchlist or [],
             "portfolio_state": portfolio_state,
             "performance": performance,
             "recent_journal": recent_journal,
             "theses": theses,
             "narrative": narrative,
+            "investor_notes": investor_notes,
+            "force_revaluation": force_revaluation,
             "toolkit": toolkit or MemoryToolkit(),
             "progress": on_progress,
         }
@@ -67,6 +75,30 @@ class DecisionEngine:
             decision=out["decision"],
             strategy=out["strategy"],
             assessments=out.get("assessments", []),
+        )
+
+    def valuate(
+        self,
+        td: TickerData,
+        regime: str = "",
+        market_thesis: str = "",
+        position: dict | None = None,
+        dossier: str = "",
+    ) -> ValuationAssessment | None:
+        """Run one on-demand valuation for a single name (the `aib valuate` path)."""
+        return assess_ticker(
+            self.client, td, regime, market_thesis, position, dossier
+        )
+
+    def discuss(self, context: str, transcript: list[dict]) -> dict:
+        """One turn of the post-run feedback dialogue. ``transcript`` is the
+        running list of {role, text} turns (latest is the investor's). Returns the
+        feedback tool payload: response, stance, ticker_notes, market_note."""
+        from . import prompts
+
+        user = prompts.build_feedback_message(context, transcript)
+        return self.client.structured_call(
+            prompts.FEEDBACK_SYSTEM, user, prompts.FEEDBACK_TOOL
         )
 
     def consolidate(

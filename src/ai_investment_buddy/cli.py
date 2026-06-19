@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import sys
 from datetime import date as date_cls
 from datetime import datetime
 
@@ -92,6 +93,12 @@ def run(
     dry_run: bool = typer.Option(
         False, "--dry-run", help="Preview the AI's decision; never execute."
     ),
+    force: bool = typer.Option(
+        False, "--force", help="Re-value every finalist even if a recent valuation still holds."
+    ),
+    no_feedback: bool = typer.Option(
+        False, "--no-feedback", help="Skip the post-run feedback dialogue."
+    ),
 ):
     """Run the daily decision cycle."""
     _require_key()
@@ -108,9 +115,19 @@ def run(
             status.update(f"[bold]{msg}")
             console.log(msg)
 
-        result = run_daily(as_of=as_of, dry_run=True, on_progress=progress)
+        result = run_daily(
+            as_of=as_of, dry_run=True, on_progress=progress, force_revaluation=force
+        )
 
     _render_decision(result)
+    console.print(
+        f"\n[dim]Full reasoning saved to data/logs/{result.as_of.isoformat()}-reasoning.md "
+        f"· news read in data/news/{result.as_of.isoformat()}/[/dim]"
+    )
+
+    # The agent invites discussion right after the analysis — before any trade.
+    if not no_feedback and not yes and sys.stdin.isatty():
+        _run_feedback(result)
 
     if dry_run:
         console.print("\n[dim]Dry run — nothing was executed.[/dim]")
@@ -118,17 +135,22 @@ def run(
 
     if not result.decision.orders:
         console.print("\n[dim]No trades proposed. Nothing to execute.[/dim]")
-        # Still record the journal + NAV so the day is logged.
         if yes or typer.confirm("Record this 'no-trade' day to the journal?", default=True):
             commit(result, on_progress=lambda m: console.log(m))
             console.print("[green]Logged.[/green]")
         return
 
-    if not yes:
-        if not typer.confirm("\nExecute these trades?", default=True):
-            console.print("[yellow]Aborted. No state changed.[/yellow]")
-            return
+    # Approve all at once, or pick trades individually.
+    if yes:
+        accepted = list(result.decision.orders)
+    else:
+        accepted = _select_orders(result.decision.orders)
 
+    if not accepted:
+        console.print("[yellow]No trades selected. Nothing executed.[/yellow]")
+        return
+
+    result.decision.orders = accepted
     commit(result, on_progress=lambda m: console.log(m))
     console.print("\n[bold green]Done.[/bold green] Executed and recorded.")
     _render_trades(result.trades)
@@ -268,6 +290,404 @@ def history():
     console.print(table)
 
 
+# --- Watchlist ---------------------------------------------------------------
+watchlist_app = typer.Typer(
+    no_args_is_help=True,
+    help="Manage your favorite stocks. Every watchlist name is always run through "
+    "the full daily process (enriched, made a finalist, and valued).",
+)
+app.add_typer(watchlist_app, name="watchlist")
+
+
+def _print_watchlist(tickers: list[str]) -> None:
+    if not tickers:
+        console.print(
+            "[yellow]Watchlist is empty.[/yellow] Add favorites with "
+            "[bold]aib watchlist add TICKER…[/bold]"
+        )
+        return
+    table = Table(title=f"Watchlist ({len(tickers)})")
+    table.add_column("#", justify="right")
+    table.add_column("ticker")
+    for i, t in enumerate(tickers, 1):
+        table.add_row(str(i), t)
+    console.print(table)
+
+
+@watchlist_app.command("list")
+def watchlist_list():
+    """Show the current watchlist."""
+    from .watchlist import load_watchlist
+
+    _print_watchlist(load_watchlist())
+
+
+@watchlist_app.command("add")
+def watchlist_add(
+    tickers: list[str] = typer.Argument(..., help="One or more tickers, e.g. AAPL NVDA."),
+):
+    """Add one or more favorites to the watchlist."""
+    from . import watchlist as wl
+
+    added = wl.add(tickers)
+    if added:
+        console.print(f"[green]Added:[/green] {', '.join(added)}")
+    else:
+        console.print("[yellow]Nothing new to add (already on the watchlist).[/yellow]")
+    _print_watchlist(wl.load_watchlist())
+
+
+@watchlist_app.command("remove")
+def watchlist_remove(
+    tickers: list[str] = typer.Argument(..., help="One or more tickers to drop."),
+):
+    """Remove one or more favorites from the watchlist."""
+    from . import watchlist as wl
+
+    removed = wl.remove(tickers)
+    if removed:
+        console.print(f"[green]Removed:[/green] {', '.join(removed)}")
+    else:
+        console.print("[yellow]None of those were on the watchlist.[/yellow]")
+    _print_watchlist(wl.load_watchlist())
+
+
+# --- Valuations --------------------------------------------------------------
+_REC_COLOR = {
+    "BUY": "green", "ADD": "green", "HOLD": "yellow", "WATCH": "yellow",
+    "TRIM": "red", "SELL": "red", "AVOID": "red",
+}
+_MKT_COLOR = {"OVERREACTING": "green", "UNDERREACTING": "red", "FAIR": "dim"}
+
+
+def _assessment_table(assessments, title: str = "Analyst valuations (fair value vs price)") -> Table:
+    vt = Table(title=title)
+    for col in ("Ticker", "Type", "Rec", "Verdict", "Market", "Fair", "Price", "Upside", "Qual", "MoS", "Conf"):
+        vt.add_column(col, justify="right")
+    for a in assessments:
+        c = _REC_COLOR.get(a.recommendation, "white")
+        up = f"{a.upside_pct:+.0f}%" if a.upside_pct is not None else "?"
+        up_c = "green" if (a.upside_pct or 0) > 0 else "red"
+        mc = _MKT_COLOR.get(a.market_view, "white")
+        vt.add_row(
+            a.ticker,
+            f"[dim]{a.archetype.title()}[/dim]" if a.archetype else "[dim]?[/dim]",
+            f"[{c}]{a.recommendation}[/{c}]",
+            a.valuation_verdict.replace("_", " ").title(),
+            f"[{mc}]{a.market_view.title()}[/{mc}]" if a.market_view else "",
+            f"${a.fair_value:.0f}" if a.fair_value else "?",
+            f"${a.current_price:.0f}" if a.current_price else "?",
+            f"[{up_c}]{up}[/{up_c}]",
+            f"{a.quality_score}/5",
+            "[green]Y[/green]" if a.margin_of_safety else "[dim]N[/dim]",
+            f"{a.confidence}/5",
+        )
+    return vt
+
+
+def _render_assessment_detail(a) -> None:
+    body = []
+    if a.valuation_method:
+        body.append(f"[bold]Method:[/bold] {a.valuation_method}")
+    if a.market_implied:
+        body.append(f"[bold]Market implies:[/bold] {a.market_implied}")
+    if a.mispricing_thesis:
+        body.append(f"[bold]Mispricing thesis:[/bold] {a.mispricing_thesis}")
+    body.append(f"[bold]Bull:[/bold] {a.bull_case}")
+    body.append(f"[bold]Bear:[/bold] {a.bear_case}")
+    body.append(f"[bold]Risks:[/bold] {a.key_risks}")
+    mc = _MKT_COLOR.get(a.market_view, "white")
+    console.print(
+        Panel(
+            "\n".join(body),
+            title=f"{a.ticker} — {a.archetype.title()} · "
+            f"[{mc}]{a.market_view.title()}[/{mc}] · {a.recommendation}",
+        )
+    )
+
+
+@app.command()
+def valuate(
+    tickers: list[str] = typer.Argument(..., help="Ticker(s) to value now, e.g. CRM NOW."),
+    watch: bool = typer.Option(False, "--watch", help="Also add these to your watchlist."),
+):
+    """Force a full fair-value analysis on specific ticker(s) right now.
+
+    Runs the archetype-driven analyst on each name and stores the result to
+    data/valuations/ (new file if unseen, updated with history if known)."""
+    _require_key()
+    from . import watchlist as wl
+    from .brain import screener
+    from .brain.decide import DecisionEngine
+    from .data import get_providers
+    from .memory import MemoryToolkit, valuations
+    from .universe import get_universe
+
+    tickers = [t for t in dict.fromkeys(wl.normalize(t) for t in tickers) if t]
+    if not tickers:
+        console.print("[red]No valid tickers given.[/red]")
+        raise typer.Exit(1)
+
+    as_of = date_cls.today()
+    results = []
+    with console.status("[bold]Valuing…", spinner="dots") as status:
+        providers = get_providers()
+        uni = {c["ticker"]: c for c in get_universe()}
+        status.update("Downloading price history…")
+        history = providers.prices.history(tickers, lookback_days=260)
+        meta = {t: uni.get(t, {"ticker": t}) for t in tickers}
+        metrics = screener.compute_metrics(history, meta)
+        status.update("Fetching fundamentals + news…")
+        enriched = screener.enrich(tickers, metrics, providers)
+
+        regime, thesis = Journal().latest_strategy()
+        positions = {}
+        if store.is_initialized():
+            pf = store.load_portfolio()
+            positions = {
+                t: {"ticker": t, "shares": round(p.shares, 4), "avg_cost": round(p.avg_cost, 2)}
+                for t, p in pf.positions.items()
+            }
+        toolkit = MemoryToolkit()
+        engine = DecisionEngine()
+        for td in enriched:
+            status.update(f"Analyst valuing {td.ticker}…")
+            try:
+                dossier = toolkit.ticker_dossier(td.ticker)
+            except Exception:
+                dossier = ""
+            a = engine.valuate(td, regime, thesis, positions.get(td.ticker), dossier)
+            if a is None:
+                console.log(f"[yellow]{td.ticker}: valuation failed.[/yellow]")
+                continue
+            valuations.save_valuation(a, as_of=as_of, regime=regime)
+            results.append(a)
+            if watch:
+                wl.add([td.ticker])
+
+    if not results:
+        console.print("[red]No valuations produced.[/red]")
+        raise typer.Exit(1)
+    from .memory import valuations as _v
+
+    _v.write_board()  # keep the market board current
+    console.print(_assessment_table(results, title="Valuation"))
+    for a in results:
+        _render_assessment_detail(a)
+    console.print("[dim]Stored to data/valuations/. See the full board with [bold]aib opportunities[/bold].[/dim]")
+
+
+@app.command()
+def opportunities(
+    limit: int = typer.Option(0, help="How many names to show (0 = all)."),
+    buys_only: bool = typer.Option(False, "--buys", help="Only BUY/ADD-rated names."),
+    sector: str = typer.Option(None, "--sector", help="Filter to one sector (substring match)."),
+    min_upside: float = typer.Option(None, "--min-upside", help="Only names with at least this %% upside."),
+    csv_path: str = typer.Option(None, "--csv", help="Also export the full board to this CSV file."),
+):
+    """The market-wide opportunity board: every name we've ever valued, ranked by
+    cost (price) vs opportunity (fair value / upside / score), to decide what to
+    watch. Also kept fresh at data/opportunities.md after every run."""
+    from .memory import valuations
+
+    rows = valuations.board_rows()
+    if not rows:
+        console.print(
+            "[yellow]No valuations stored yet.[/yellow] Run [bold]aib run[/bold] or "
+            "[bold]aib valuate TICKER[/bold]."
+        )
+        raise typer.Exit(0)
+
+    if buys_only:
+        rows = [r for r in rows if r["recommendation"] in ("BUY", "ADD")]
+    if sector:
+        rows = [r for r in rows if sector.lower() in (r["sector"] or "").lower()]
+    if min_upside is not None:
+        rows = [r for r in rows if (r["upside_pct"] or -999) >= min_upside]
+
+    if csv_path:
+        import csv as _csv
+
+        with open(csv_path, "w", newline="") as f:
+            w = _csv.DictWriter(f, fieldnames=valuations.BOARD_COLUMNS)
+            w.writeheader()
+            w.writerows(rows)
+        console.print(f"[green]Exported {len(rows)} rows → {csv_path}[/green]")
+
+    total = len(rows)
+    shown = rows if limit in (0, None) else rows[:limit]
+    table = Table(title=f"Opportunity board — {len(shown)} of {total} valued names")
+    for col in ("Score", "Ticker", "Sector", "Type", "Rec", "Market", "Price", "Fair", "Upside", "Q", "MoS", "Conf", "As of"):
+        table.add_column(col, justify="right")
+    for r in shown:
+        c = _REC_COLOR.get(r["recommendation"], "white")
+        mc = _MKT_COLOR.get(r["market_view"], "white")
+        up = f"{r['upside_pct']:+.0f}%" if r["upside_pct"] is not None else "?"
+        up_c = "green" if (r["upside_pct"] or 0) > 0 else "red"
+        score_c = "green" if r["score"] > 0 else "dim"
+        table.add_row(
+            f"[{score_c}]{r['score']:+.1f}[/{score_c}]",
+            r["ticker"],
+            f"[dim]{(r['sector'] or '?')[:14]}[/dim]",
+            f"[dim]{r['archetype'].title()}[/dim]" if r["archetype"] else "[dim]?[/dim]",
+            f"[{c}]{r['recommendation']}[/{c}]",
+            f"[{mc}]{r['market_view'].title()}[/{mc}]" if r["market_view"] else "",
+            f"${r['current_price']:.0f}" if r["current_price"] else "?",
+            f"${r['fair_value']:.0f}" if r["fair_value"] else "?",
+            f"[{up_c}]{up}[/{up_c}]",
+            f"{r['quality_score']}/5",
+            "[green]Y[/green]" if r["margin_of_safety"] else "[dim]—[/dim]",
+            f"{r['confidence']}/5",
+            r["last_assessed"],
+        )
+    console.print(table)
+    console.print(
+        "[dim]Score blends recommendation, upside, quality, margin of safety, conviction, and "
+        "market over-reaction. Watch one with [bold]aib watchlist add TICKER[/bold]; deep-dive "
+        "with [bold]aib valuate TICKER[/bold]. Full board: data/opportunities.md[/dim]"
+    )
+
+
+# --- Trade approval ----------------------------------------------------------
+def _order_label(o) -> str:
+    return (
+        f"{o.action.value} {o.ticker} → target {o.target_weight:.0%} "
+        f"(conviction {o.conviction}/5)"
+    )
+
+
+def _select_orders(orders: list):
+    """Let the user approve all proposed trades at once, pick them individually,
+    or reject everything. Returns the approved subset."""
+    console.print(
+        f"\n[bold]{len(orders)} proposed trade(s).[/bold] "
+        "[A]ll / [S]elect individually / [N]one?"
+    )
+    choice = typer.prompt("choice", default="A").strip().lower()
+    if choice.startswith("n"):
+        return []
+    if choice.startswith("s"):
+        kept = []
+        for o in orders:
+            if typer.confirm(f"  {_order_label(o)} — include?", default=True):
+                kept.append(o)
+        return kept
+    return list(orders)  # "All" (default)
+
+
+# --- Feedback dialogue -------------------------------------------------------
+def _feedback_context(result) -> str:
+    d = result.decision
+    lines = [
+        f"Regime: {result.strategy.regime if getattr(result, 'strategy', None) else '?'}",
+        f"PM thesis: {d.market_thesis}",
+    ]
+    if d.orders:
+        lines.append(
+            "Orders: " + "; ".join(
+                f"{o.action.value} {o.ticker}→{o.target_weight:.0%}" for o in d.orders
+            )
+        )
+    else:
+        lines.append("Orders: none (held).")
+    if getattr(result, "assessments", None):
+        lines.append("Key valuations:")
+        for a in result.assessments[:12]:
+            lines.append("  " + a.one_line())
+    return "\n".join(lines)
+
+
+def _run_feedback(result) -> None:
+    """Interactive post-run dialogue: the PM discusses the decision, challenges or
+    agrees, and stores any durable takeaways into memory."""
+    from .brain.decide import DecisionEngine
+    from .memory import valuations
+    from .models import InvestorNote
+
+    console.print(
+        "\n[bold cyan]Feedback[/bold cyan] — tell the PM what you think "
+        "(a name, the market, a thesis). It will engage and remember. Empty to skip."
+    )
+    first = typer.prompt("you", default="", show_default=False)
+    if not first.strip():
+        console.print("[dim]No feedback. Done.[/dim]")
+        return
+
+    engine = DecisionEngine()
+    context = _feedback_context(result)
+    transcript = [{"role": "investor", "text": first.strip()}]
+    ticker_notes: dict[str, tuple[str, bool, str]] = {}  # ticker -> (note, changes, stance)
+    market_notes: list[str] = []
+    today = date_cls.today()
+
+    while True:
+        try:
+            with console.status("[bold]PM is thinking…", spinner="dots"):
+                payload = engine.discuss(context, transcript)
+        except Exception as e:
+            console.print(f"[red]Discussion failed: {e}[/red]")
+            break
+        resp = str(payload.get("response", "")).strip()
+        stance = str(payload.get("stance", ""))
+        console.print(Panel(resp or "_(no reply)_", title=f"PM · {stance}"))
+        transcript.append({"role": "pm", "text": resp})
+        for tn in payload.get("ticker_notes", []) or []:
+            t = str(tn.get("ticker", "")).upper().strip()
+            if t and tn.get("note"):
+                ticker_notes[t] = (str(tn["note"]), bool(tn.get("changes_thesis", False)), stance)
+        mn = str(payload.get("market_note", "")).strip()
+        if mn:
+            market_notes.append(mn)
+
+        nxt = typer.prompt("you (empty to finish)", default="", show_default=False)
+        if not nxt.strip():
+            break
+        transcript.append({"role": "investor", "text": nxt.strip()})
+
+    investor_text = " / ".join(t["text"] for t in transcript if t["role"] == "investor")
+    stored = []
+    for t, (note, changes, stance) in ticker_notes.items():
+        ok = valuations.add_note(
+            t,
+            InvestorNote(
+                date=today, user_view=investor_text, agent_response=note,
+                stance=stance, changes_thesis=changes,
+            ),
+        )
+        if ok:
+            stored.append(t + ("*" if changes else ""))
+        else:
+            market_notes.append(f"{t}: {note}")  # no valuation yet → keep as market note
+    journal = Journal()
+    for mn in market_notes:
+        journal.append_investor_note(mn, today)
+
+    if stored or market_notes:
+        console.print(
+            f"[green]Remembered.[/green] Per-name: {', '.join(stored) or 'none'}; "
+            f"market notes: {len(market_notes)}.  [dim](* = forces a fresh valuation next run)[/dim]"
+        )
+    else:
+        console.print("[dim]Nothing durable to store.[/dim]")
+
+
+@app.command()
+def feedback():
+    """Discuss the latest decision with the PM and record any takeaways."""
+    _require_key()
+    entries = Journal().recent_entries(1)
+    if not entries:
+        console.print("[yellow]No decision logged yet.[/yellow] Run [bold]aib run[/bold] first.")
+        raise typer.Exit(0)
+
+    class _Ctx:  # minimal shim so _run_feedback can build context from the journal
+        decision = type("D", (), {"market_thesis": entries[-1][:1500], "orders": []})()
+        strategy = None
+        assessments = []
+
+    _run_feedback(_Ctx())
+
+
 # --- Rendering helpers -------------------------------------------------------
 def _current_benchmark_levels() -> dict[str, float]:
     from .data import get_providers
@@ -289,31 +709,11 @@ def _render_decision(result) -> None:
         console.print(
             Panel(s.market_thesis or "_(none)_", title=f"Strategist — regime: {s.regime}")
         )
+        if getattr(s, "sector_read", ""):
+            console.print(Panel(s.sector_read, title="Sector read (overreaction vs value trap)"))
 
     if getattr(result, "assessments", None):
-        vt = Table(title="Analyst valuations (fair value vs price)")
-        for col in ("Ticker", "Rec", "Verdict", "Fair", "Price", "Upside", "Qual", "MoS", "Conf"):
-            vt.add_column(col, justify="right")
-        rec_color = {
-            "BUY": "green", "ADD": "green", "HOLD": "yellow", "WATCH": "yellow",
-            "TRIM": "red", "SELL": "red", "AVOID": "red",
-        }
-        for a in result.assessments:
-            c = rec_color.get(a.recommendation, "white")
-            up = f"{a.upside_pct:+.0f}%" if a.upside_pct is not None else "?"
-            up_c = "green" if (a.upside_pct or 0) > 0 else "red"
-            vt.add_row(
-                a.ticker,
-                f"[{c}]{a.recommendation}[/{c}]",
-                a.valuation_verdict.replace("_", " ").title(),
-                f"${a.fair_value:.0f}" if a.fair_value else "?",
-                f"${a.current_price:.0f}" if a.current_price else "?",
-                f"[{up_c}]{up}[/{up_c}]",
-                f"{a.quality_score}/5",
-                "[green]Y[/green]" if a.margin_of_safety else "[dim]N[/dim]",
-                f"{a.confidence}/5",
-            )
-        console.print(vt)
+        console.print(_assessment_table(result.assessments))
 
     console.print(Panel(d.market_thesis or "_(none)_", title=f"PM thesis — {d.as_of}"))
 
