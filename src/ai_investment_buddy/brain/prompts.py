@@ -577,6 +577,77 @@ def build_pm_message(
 
 
 # =============================================================================
+# Curiosity verdict — full-agent take on a user-picked name (NOT a trade)
+# =============================================================================
+CURIOSITY_VERDICT_SYSTEM = """You are the Portfolio Manager of AI Investment Buddy. The investor \
+has asked you to analyse ONE specific company OUT OF CURIOSITY — THEY picked it, it did NOT come \
+from your screener, and this is NOT today's allocation: nothing here will be traded or committed. \
+Answer candidly, as if a colleague asked 'what do you make of this one — would you actually want it?'
+
+Using the analyst's assessment, the regime/sector context, your current portfolio, your recent \
+activity, and your PATIENCE discipline (high bar for action, risk/reward first, structural risk is \
+decisive, cash is a perfectly good position), give your verdict: would you initiate or add this \
+name, merely watch it, or pass/avoid — and at what weight IF you acted. Be willing to say 'it does \
+not clear my bar' and exactly why. Explain how it would (or wouldn't) fit the existing book. This is \
+an honest opinion for the investor, not a committed decision. Call submit_verdict exactly once."""
+
+CURIOSITY_VERDICT_TOOL = {
+    "name": "submit_verdict",
+    "description": "Your candid verdict on this investor-picked name (not a trade).",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "verdict": {
+                "type": "string",
+                "enum": ["WOULD_BUY", "WOULD_ADD", "WATCH", "PASS", "WOULD_AVOID"],
+                "description": "What you'd do with this name if it were live — honestly.",
+            },
+            "suggested_weight": {
+                "type": "number", "minimum": 0.0, "maximum": 1.0,
+                "description": "Weight of NAV you'd give it if you acted (0 if you wouldn't).",
+            },
+            "sizing_rationale": {"type": "string", "description": "Why that weight (or why zero)."},
+            "fit_with_portfolio": {"type": "string", "description": "How it fits / conflicts with the current book and cash."},
+            "bottom_line": {"type": "string", "description": "One candid paragraph: your take for the investor."},
+        },
+        "required": ["verdict", "suggested_weight", "sizing_rationale", "fit_with_portfolio", "bottom_line"],
+    },
+}
+
+
+def build_curiosity_message(
+    assessment: ValuationAssessment,
+    regime: str,
+    market_thesis: str,
+    sector_context: str,
+    portfolio_state: dict,
+    recent_activity: str = "",
+) -> str:
+    import json as _json
+
+    parts = [
+        f"=== CURIOSITY ANALYSIS: {assessment.ticker} "
+        "(investor-requested — NOT a screener pick, will NOT be executed) ==="
+    ]
+    if regime:
+        parts.append(f"\nMARKET REGIME (as of last run): {regime}")
+    if market_thesis:
+        parts.append(f"STRATEGIST THESIS: {market_thesis}")
+    if sector_context:
+        parts.append(f"\n{sector_context}")
+    parts.append("\n--- ANALYST ASSESSMENT ---")
+    parts.append(_fmt_assessment(assessment))
+    parts.append("\n--- YOUR CURRENT PORTFOLIO ---")
+    parts.append(_json.dumps(portfolio_state, indent=2))
+    if recent_activity:
+        parts.append(f"\nRECENT ACTIVITY: {recent_activity}")
+    parts.append(
+        "\nGive your candid verdict (this will NOT be executed). Call submit_verdict exactly once."
+    )
+    return "\n".join(parts)
+
+
+# =============================================================================
 # Post-run feedback dialogue
 # =============================================================================
 FEEDBACK_SYSTEM = """You are the Portfolio Manager of AI Investment Buddy, talking with the human \

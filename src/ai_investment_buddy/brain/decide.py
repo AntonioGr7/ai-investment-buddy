@@ -94,6 +94,27 @@ class DecisionEngine:
             self.client, td, regime, market_thesis, position, dossier
         )
 
+    def curiosity_verdict(
+        self,
+        assessment: ValuationAssessment,
+        regime: str = "",
+        market_thesis: str = "",
+        sector_context: str = "",
+        portfolio_state: dict | None = None,
+        recent_activity: str = "",
+    ) -> dict:
+        """The PM's candid take on a user-picked name (full-agent treatment). NOT a
+        trade — explicitly framed as an investor curiosity. Returns the verdict payload."""
+        from . import prompts
+
+        user = prompts.build_curiosity_message(
+            assessment, regime, market_thesis, sector_context,
+            portfolio_state or {}, recent_activity,
+        )
+        return self.client.structured_call(
+            prompts.CURIOSITY_VERDICT_SYSTEM, user, prompts.CURIOSITY_VERDICT_TOOL
+        )
+
     def discuss(self, context: str, transcript: list[dict]) -> dict:
         """One turn of the post-run feedback dialogue. ``transcript`` is the
         running list of {role, text} turns (latest is the investor's). Returns the

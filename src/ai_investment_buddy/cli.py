@@ -424,11 +424,17 @@ def _render_assessment_detail(a) -> None:
 def valuate(
     tickers: list[str] = typer.Argument(..., help="Ticker(s) to value now, e.g. CRM NOW."),
     watch: bool = typer.Option(False, "--watch", help="Also add these to your watchlist."),
+    full: bool = typer.Option(
+        False, "--full", "-f",
+        help="Full-agent treatment: also get the PM's verdict (would it want this, "
+        "and at what size) with regime/sector/portfolio context. A curiosity analysis "
+        "— the agent knows it's investor-picked and nothing is traded.",
+    ),
 ):
-    """Force a full fair-value analysis on specific ticker(s) right now.
+    """Force a fair-value analysis on specific ticker(s) right now (the analyst stage).
 
-    Runs the archetype-driven analyst on each name and stores the result to
-    data/valuations/ (new file if unseen, updated with history if known)."""
+    Stores each result to data/valuations/. With --full, also runs the PM's verdict
+    (the whole-agent take on a name YOU picked) — explicitly a curiosity, never traded."""
     _require_key()
     from . import watchlist as wl
     from .brain import screener
@@ -488,7 +494,81 @@ def valuate(
     console.print(_assessment_table(results, title="Valuation"))
     for a in results:
         _render_assessment_detail(a)
+
+    if full:
+        _curiosity_verdicts(results, enriched, uni, regime, thesis, positions)
+
     console.print("[dim]Stored to data/valuations/. See the full board with [bold]aib opportunities[/bold].[/dim]")
+
+
+_VERDICT_COLOR = {
+    "WOULD_BUY": "green", "WOULD_ADD": "green", "WATCH": "yellow",
+    "PASS": "red", "WOULD_AVOID": "red",
+}
+
+
+def _render_verdict(ticker: str, v: dict) -> None:
+    verdict = str(v.get("verdict", "?"))
+    w = v.get("suggested_weight", 0) or 0
+    body = [
+        f"[bold]Verdict:[/bold] [{_VERDICT_COLOR.get(verdict,'white')}]{verdict.replace('_',' ')}[/]"
+        f"  ·  would-be weight {w:.0%}",
+        f"[bold]Sizing:[/bold] {v.get('sizing_rationale','')}",
+        f"[bold]Fit with portfolio:[/bold] {v.get('fit_with_portfolio','')}",
+        f"[bold]Bottom line:[/bold] {v.get('bottom_line','')}",
+    ]
+    console.print(
+        Panel("\n".join(body), title=f"PM verdict — {ticker}  [dim](curiosity · not executed)[/dim]")
+    )
+
+
+def _curiosity_verdicts(results, enriched, uni, regime, thesis, positions) -> None:
+    """Full-agent PM verdict on each user-picked name (curiosity, never traded)."""
+    from .brain import sectors
+    from .brain.decide import DecisionEngine
+    from .data import get_providers
+    from .engine.pipeline import _portfolio_state, _recent_activity
+
+    console.print(
+        "\n[bold cyan]Full-agent verdict[/bold cyan] "
+        "[dim](you picked these — the PM weighs in as if considering them, but nothing is traded)[/dim]"
+    )
+    providers = get_providers()
+    sector_by_ticker = {td.ticker: (td.sector or (uni.get(td.ticker) or {}).get("sector")) for td in enriched}
+
+    # Real portfolio context + recent turnover so the verdict is grounded.
+    portfolio_state, recent = {}, ""
+    if store.is_initialized():
+        pf = store.load_portfolio()
+        portfolio_state = _portfolio_state(pf, _latest_prices_for(pf))
+        recent = _recent_activity(date_cls.today())
+
+    with console.status("[bold]Fetching sector context…", spinner="dots"):
+        perf = sectors.fetch_sector_performance(providers.prices)
+
+    def sector_ctx(sector: str) -> str:
+        d = perf.get(sector or "")
+        if not d:
+            return ""
+        trend = sectors._trend_label(d.get("ret_3m"), d.get("ret_6m"), d.get("ret_12m"))
+        pf_ = lambda x: f"{x:+.0f}%" if x is not None else "?"
+        return (
+            f"SECTOR CONTEXT — {sector} ({d.get('etf')}): 3m {pf_(d.get('ret_3m'))}, "
+            f"6m {pf_(d.get('ret_6m'))}, 12m {pf_(d.get('ret_12m'))} [{trend}]"
+        )
+
+    engine = DecisionEngine()
+    for a in results:
+        with console.status(f"[bold]PM verdict on {a.ticker}…", spinner="dots"):
+            try:
+                v = engine.curiosity_verdict(
+                    a, regime, thesis, sector_ctx(sector_by_ticker.get(a.ticker, "")),
+                    portfolio_state, recent,
+                )
+            except Exception as e:
+                console.log(f"[yellow]{a.ticker}: verdict failed ({e}).[/yellow]")
+                continue
+        _render_verdict(a.ticker, v)
 
 
 @app.command()

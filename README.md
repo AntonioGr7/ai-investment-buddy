@@ -146,9 +146,13 @@ limited downside. The board shows upside, **downside**, **R/R**, and the
 written to **`data/opportunities.md`** after every run, so there's always a
 current table to open. Found one you like? `aib watchlist add TICKER`.
 
-You can also force a deep-dive on demand: `aib valuate CRM NOW` runs the full
+You can also force a deep-dive on demand: `aib valuate CRM NOW` runs the
 archetype-driven analyst on those names right now and stores the results (add
-`--watch` to also pin them to your watchlist).
+`--watch` to also pin them to your watchlist). Add **`--full`** for the
+*whole-agent* take on a name **you** picked — regime + sector-trend context, the
+risk/reward valuation, **and the PM's verdict** (would it want this, at what size,
+how it fits the book). It's explicitly framed as an investor curiosity: the agent
+knows you selected it, and **nothing is traded**.
 
 **Freshness / no wasted re-analysis.** Each valuation records its date and the
 headlines it was based on. On the next run, a name is *not* re-valued if it was
@@ -224,7 +228,8 @@ uv run aib import <file>        # restore state on another machine and resume
 uv run aib watchlist add NVDA AAPL   # add favorites (always deep-dived in full)
 uv run aib watchlist list            # show the watchlist
 uv run aib watchlist remove NVDA     # drop a favorite
-uv run aib valuate CRM NOW           # force a full valuation on specific tickers
+uv run aib valuate CRM NOW           # force a valuation on specific tickers (analyst)
+uv run aib valuate NVDA --full       # full-agent take incl. the PM's verdict (curiosity)
 uv run aib opportunities             # the market-wide board: every name ever valued
 uv run aib opportunities --buys --sector Tech --csv board.csv   # filter + export
 ```
