@@ -49,6 +49,9 @@ class MacroProvider(Protocol):
 
 @runtime_checkable
 class MarketNewsProvider(Protocol):
-    def market_digest(self, days: int = 3, per_feed: int = 5) -> list[dict]:
-        """Recent market-wide & macro/Fed headlines (newest first)."""
+    def market_digest(
+        self, days: int = 3, per_feed: int = 5, macro_only: bool = False
+    ) -> list[dict]:
+        """Recent market-wide & macro/Fed headlines (newest first). ``macro_only``
+        restricts to macro/policy feeds (a lean regime read)."""
         ...

@@ -52,7 +52,9 @@ class BrainState(TypedDict, total=False):
     theses: dict[str, dict]
     narrative: str
     investor_notes: str
+    recent_activity: str
     force_revaluation: bool
+    news_fetcher: Any  # optional callable(ticker, limit) -> list[str]; news pulled post-selection
     toolkit: MemoryToolkit
     # Intermediates / outputs
     strategy: StrategistView
@@ -119,9 +121,17 @@ def _make_node_runner(client: LLMClient):
 
         force = state.get("force_revaluation", False)
         as_of = state["as_of"]
+        news_fetcher = state.get("news_fetcher")
 
         def assess(ticker: str) -> ValuationAssessment | None:
             td = by_ticker.get(ticker) or TickerData(ticker=ticker)
+            # News is pulled HERE — after the strategist chose this name — so the
+            # selection was trend/value-driven and the news is targeted DD.
+            if news_fetcher and not td.headlines:
+                try:
+                    td.headlines = news_fetcher(ticker, 8)
+                except Exception:
+                    pass
             # Skip a fresh model call if a recent valuation still holds (unless
             # forced). Keeps cost down and avoids re-deciding settled views.
             if not force:
@@ -173,6 +183,7 @@ def _make_node_runner(client: LLMClient):
             theses=state["theses"],
             narrative=state.get("narrative", ""),
             investor_notes=state.get("investor_notes", ""),
+            recent_activity=state.get("recent_activity", ""),
         )
         executor = make_memory_executor(
             state["toolkit"],
@@ -238,12 +249,24 @@ def assess_ticker(
         fair_value=fair,
         current_price=price,
         upside_pct=round(upside, 1) if upside is not None else None,
+        bear_value=p.get("bear_value"),
+        downside_pct=(
+            round(p["downside_pct"], 1) if p.get("downside_pct") is not None
+            else (round((p["bear_value"] / price - 1) * 100, 1)
+                  if p.get("bear_value") and price else None)
+        ),
+        risk_reward=p.get("risk_reward"),
         valuation_verdict=p.get("valuation_verdict", "FAIRLY_VALUED"),
         quality_score=int(p.get("quality_score", 3)),
         margin_of_safety=bool(p.get("margin_of_safety", False)),
+        structural_risk=str(p.get("structural_risk", "MEDIUM")),
+        why_market_disagrees=str(p.get("why_market_disagrees", "")),
+        rerating_catalyst=str(p.get("rerating_catalyst", "")),
         market_implied=str(p.get("market_implied", "")),
         market_view=str(p.get("market_view", "FAIR")),
         mispricing_thesis=str(p.get("mispricing_thesis", "")),
+        news_sentiment=str(p.get("news_sentiment", "")),
+        news_assessment=str(p.get("news_assessment", "")),
         bull_case=str(p.get("bull_case", "")),
         bear_case=str(p.get("bear_case", "")),
         key_risks=str(p.get("key_risks", "")),

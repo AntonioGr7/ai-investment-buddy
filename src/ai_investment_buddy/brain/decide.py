@@ -48,7 +48,9 @@ class DecisionEngine:
         watchlist: list[str] | None = None,
         narrative: str = "",
         investor_notes: str = "",
+        recent_activity: str = "",
         force_revaluation: bool = False,
+        news_fetcher=None,
         toolkit: MemoryToolkit | None = None,
         on_progress=None,
     ) -> BrainResult:
@@ -66,7 +68,9 @@ class DecisionEngine:
             "theses": theses,
             "narrative": narrative,
             "investor_notes": investor_notes,
+            "recent_activity": recent_activity,
             "force_revaluation": force_revaluation,
+            "news_fetcher": news_fetcher,
             "toolkit": toolkit or MemoryToolkit(),
             "progress": on_progress,
         }

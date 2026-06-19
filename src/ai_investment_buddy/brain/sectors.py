@@ -89,9 +89,37 @@ def fetch_sector_performance(prices, lookback_days: int = 260) -> dict[str, dict
             "ret_1m": _ret(closes, 21),
             "ret_3m": _ret(closes, 63),
             "ret_6m": _ret(closes, 126),
+            "ret_12m": _ret(closes, 252),
             "ret_ytd": _ytd(closes),
         }
     return out
+
+
+def _trend_label(r3: float | None, r6: float | None, r12: float | None) -> str:
+    """Classify a sector by its long-run trend vs its recent move, so we can lead
+    with durable trends and pursue dislocations within them.
+
+      durable-up      strong over 6-12m and not falling now
+      dip-in-uptrend  strong over 6-12m but down recently — the contrarian entry
+      durable-down    weak over 6-12m and still falling (secular decline / value trap)
+      recovering      weak over 6-12m but turning up recently
+      choppy/n.a.     mixed or insufficient data
+    """
+    if r12 is None or r6 is None:
+        return "n/a"
+    up_long = r12 > 5 and r6 > -2
+    down_long = r12 < -5 and r6 < 2
+    short_down = r3 is not None and r3 < -3
+    short_up = r3 is not None and r3 > 3
+    if up_long and short_down:
+        return "dip-in-uptrend"
+    if up_long:
+        return "durable-up"
+    if down_long and short_up:
+        return "recovering"
+    if down_long:
+        return "durable-down"
+    return "choppy"
 
 
 def scan_sectors(
@@ -119,13 +147,18 @@ def scan_sectors(
         above = [n.above_200dma for n in names if n.above_200dma is not None]
         breadth = round(100 * sum(1 for x in above if x) / len(above), 0) if above else None
         etf = etf_perf.get(sector, {})
+        med_3m = _median([n.ret_3m for n in names])
+        med_6m = _median([n.ret_6m for n in names])
+        r3 = etf.get("ret_3m") if etf.get("ret_3m") is not None else med_3m
+        r6 = etf.get("ret_6m") if etf.get("ret_6m") is not None else med_6m
+        r12 = etf.get("ret_12m")
         stats.append(
             SectorStat(
                 sector=sector,
                 n=len(names),
                 ret_1m=_median([n.ret_1m for n in names]),
-                ret_3m=_median([n.ret_3m for n in names]),
-                ret_6m=_median([n.ret_6m for n in names]),
+                ret_3m=med_3m,
+                ret_6m=med_6m,
                 breadth_200dma=breadth,
                 median_drawdown=_median([n.drawdown_pct for n in names]),
                 etf=etf.get("etf"),
@@ -133,7 +166,9 @@ def scan_sectors(
                 etf_ret_1m=etf.get("ret_1m"),
                 etf_ret_3m=etf.get("ret_3m"),
                 etf_ret_6m=etf.get("ret_6m"),
+                etf_ret_12m=r12,
                 etf_ret_ytd=etf.get("ret_ytd"),
+                trend=_trend_label(r3, r6, r12),
             )
         )
 
@@ -156,9 +191,12 @@ def format_sector_scan(stats: list[SectorStat]) -> str:
     if not stats:
         return "SECTOR SCAN: (insufficient data)"
     lines = [
-        "SECTOR SCAN (sector-ETF market-cap-weighted returns where shown, else "
-        "median across our constituents, + breadth; WORST-PERFORMING FIRST — these "
-        "are where the market may be overreacting):"
+        "SECTOR TREND MAP (sector-ETF market-cap-weighted returns incl. the long-run "
+        "6-12m trend, + breadth; worst-3m first). The [trend] tag reads the long run "
+        "vs the recent move: 'durable-up' = structurally strong; 'dip-in-uptrend' = "
+        "strong long-run but sold off recently (the PRIME contrarian entry — the "
+        "long-run trend says the dip is likely an overreaction); 'durable-down' = "
+        "secular decline (value trap, avoid); 'recovering' = turning up off a weak base:"
     ]
     for s in stats:
         lines.append("  - " + s.one_line())

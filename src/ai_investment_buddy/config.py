@@ -102,16 +102,41 @@ class Settings:
     min_trade_value: float = 250.0  # ignore dust trades
     cash_floor: float = 0.0  # can go fully invested; never below 0 (no leverage)
 
+    # --- Patience / anti-churn (this is a long-run game) ---
+    # Don't rebalance an existing holding for weight drift smaller than this — micro-
+    # adjustments just pay slippage. (Full exits and brand-new positions are exempt.)
+    rebalance_band: float = 0.03  # 3% of NAV
+    # A new position must clear this conviction bar (1-5) — opening a position is a
+    # high-bar act, not a default. Stated to the PM; it decides with judgement.
+    min_conviction_to_open: int = 4
+
     # --- Trading frictions (paper realism) ---
     commission_per_trade: float = 0.0
     slippage_bps: float = 5.0  # 0.05% applied against you on each fill
 
     # --- Data providers (swap implementations without touching callers) ---
+    # Bulk price history stays on yfinance (one 500-ticker pull would blow the
+    # Finnhub free budget). News + fundamentals auto-prefer Finnhub when a key is
+    # present (far better company news + richer fundamentals); explicit env wins.
     price_provider: str = os.getenv("AIB_PRICE_PROVIDER", "yfinance")
-    fundamentals_provider: str = os.getenv("AIB_FUNDAMENTALS_PROVIDER", "yfinance")
-    news_provider: str = os.getenv("AIB_NEWS_PROVIDER", "yfinance")
     macro_provider: str = os.getenv("AIB_MACRO_PROVIDER", "yfinance")
     market_news_provider: str = os.getenv("AIB_MARKET_NEWS_PROVIDER", "rss")
+
+    @property
+    def finnhub_api_key(self) -> str | None:
+        return os.getenv("FINNHUB_API_KEY")
+
+    @property
+    def news_provider(self) -> str:
+        return os.getenv("AIB_NEWS_PROVIDER") or (
+            "finnhub" if self.finnhub_api_key else "yfinance"
+        )
+
+    @property
+    def fundamentals_provider(self) -> str:
+        return os.getenv("AIB_FUNDAMENTALS_PROVIDER") or (
+            "finnhub" if self.finnhub_api_key else "yfinance"
+        )
 
     # --- State snapshots ---
     # After each committed run, auto-export a portable snapshot of all state.

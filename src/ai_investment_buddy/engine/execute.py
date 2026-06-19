@@ -51,8 +51,15 @@ def execute(
 
         pos = portfolio.positions.get(o.ticker)
         current_value = pos.market_value(price) if pos else 0.0
-        delta = target_value - current_value
 
+        # Anti-churn: skip trivial rebalances of an existing holding (weight drift
+        # below the band). Full exits (target 0) and brand-new positions are exempt.
+        if pos and target_w > 0:
+            current_w = current_value / nav if nav else 0.0
+            if abs(target_w - current_w) < SETTINGS.rebalance_band:
+                continue
+
+        delta = target_value - current_value
         if abs(delta) < SETTINGS.min_trade_value:
             continue
 

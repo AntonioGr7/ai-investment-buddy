@@ -65,14 +65,21 @@ def _entry_dt(entry) -> datetime | None:
 
 
 class RSSMarketNews:
-    def market_digest(self, days: int = 3, per_feed: int = 5) -> list[dict]:
+    def market_digest(
+        self, days: int = 3, per_feed: int = 5, macro_only: bool = False
+    ) -> list[dict]:
         """Return recent market/macro headlines as dicts:
-        {category, source, title, published, summary}. Newest first."""
+        {category, source, title, published, summary}. Newest first.
+
+        ``macro_only`` keeps just the macro/policy feeds (Fed, rates, economy) and
+        drops the broad market-headline feeds — a lean regime read rather than an
+        ambient news dump."""
         cutoff = datetime.now(timezone.utc) - timedelta(days=days)
         seen_titles: set[str] = set()
         items: list[dict] = []
 
-        for category, source, url in _MACRO_FEEDS + _MARKET_FEEDS:
+        feeds = _MACRO_FEEDS if macro_only else _MACRO_FEEDS + _MARKET_FEEDS
+        for category, source, url in feeds:
             feed = _parse_feed(url)
             if not feed or not getattr(feed, "entries", None):
                 continue

@@ -5,6 +5,7 @@ mutating any state (useful to preview what the AI would do)."""
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 
@@ -87,12 +88,59 @@ def _auto_export(progress) -> None:
         progress(f"(auto-export skipped: {e})")
 
 
+def _valid_px(px) -> bool:
+    # Reject None, NaN (px != px), and non-positive prices.
+    return px is not None and px == px and px > 0
+
+
+def _recent_activity(as_of: date) -> str:
+    """A short turnover note for the PM, so it can feel its own churn and resist
+    trading when it has just traded. This is a long-run game — patience compounds."""
+    trades = store.load_trades()
+    if not trades:
+        return "No trades yet — the book is fresh; only act on a genuine fat pitch."
+    last = max(t.timestamp.date() for t in trades)
+    days_since = (as_of - last).days
+    n7 = sum(1 for t in trades if (as_of - t.timestamp.date()).days <= 7)
+    n30 = sum(1 for t in trades if (as_of - t.timestamp.date()).days <= 30)
+    return (
+        f"{n7} trade(s) in the last 7 days, {n30} in the last 30; "
+        f"last trade {days_since} day(s) ago. "
+        f"If you have been active recently, the bar to trade again is higher."
+    )
+
+
 def _ensure_prices(providers, prices: dict[str, float], tickers: list[str]) -> None:
     for t in tickers:
-        if t not in prices or not prices[t]:
+        cur = prices.get(t)
+        if not _valid_px(cur):
             px = providers.prices.latest_price(t)
-            if px:
+            if _valid_px(px):
                 prices[t] = px
+
+
+def _refresh_live_prices(providers, shortlist, prices: dict[str, float], progress) -> None:
+    """Overwrite the shortlist's prices with a freshly-fetched current price.
+
+    The bulk daily download can be a day stale (the latest bar's close is often
+    NaN), which silently values and trades names on yesterday's price — dangerous
+    during a fast move. We refresh the small shortlist so both the analyst's
+    valuation and execution use the *current* price."""
+    by = {td.ticker: td for td in shortlist}
+    if not by:
+        return
+
+    def fetch(t):
+        return t, providers.prices.latest_price(t)
+
+    n = 0
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        for t, px in ex.map(fetch, list(by)):
+            if _valid_px(px):
+                prices[t] = round(px, 2)
+                by[t].price = round(px, 2)
+                n += 1
+    progress(f"Refreshed live prices for {n}/{len(by)} shortlist names.")
 
 
 def run_daily(
@@ -130,9 +178,9 @@ def run_daily(
     progress("Sampling macro snapshot…")
     macro = providers.macro.snapshot()
 
-    progress("Reading market & macro/Fed news…")
-    market_news = providers.market_news.market_digest(days=4, per_feed=5)
-    progress(f"Pulled {len(market_news)} market/macro headlines.")
+    progress("Reading macro/Fed policy news (regime only)…")
+    market_news = providers.market_news.market_digest(days=4, per_feed=5, macro_only=True)
+    progress(f"Pulled {len(market_news)} macro/policy headlines.")
 
     progress(f"Downloading price history for {len(download_tickers)} tickers…")
     history = providers.prices.history(download_tickers, lookback_days=260)
@@ -157,17 +205,16 @@ def run_daily(
     progress(
         f"Screened to {len(shortlist_tickers)} candidates "
         f"({len(holdings)} holdings + {len(watchlist)} watchlist included). "
-        f"Enriching with fundamentals + news…"
+        f"Enriching with fundamentals (news fetched per-finalist after selection)…"
     )
-    shortlist = screener.enrich(shortlist_tickers, metrics, providers)
+    shortlist = screener.enrich(shortlist_tickers, metrics, providers, with_news=False)
 
-    # Audit trail: dump the raw news + sector map the agent read so it's inspectable.
-    audit.write_news(as_of, macro, market_news, shortlist, sector_scan)
-    if SETTINGS.write_audit:
-        progress("Saved news + sector map the agent read → data/news/.")
-
-    # Prices for valuation.
+    # Prices for valuation. The bulk daily download can be a day stale (latest
+    # bar's close NaN), so refresh the shortlist with fresh live prices before the
+    # brain values or we trade anything.
     prices = {t: td.price for t, td in metrics.items() if td.price}
+    progress("Refreshing live prices for the shortlist…")
+    _refresh_live_prices(providers, shortlist, prices, progress)
     _ensure_prices(providers, prices, holdings + watchlist)
 
     nav_history = store.load_nav_history()
@@ -202,7 +249,9 @@ def run_daily(
         watchlist=watchlist,
         narrative=narrative,
         investor_notes=investor_notes,
+        recent_activity=_recent_activity(as_of),
         force_revaluation=force_revaluation,
+        news_fetcher=providers.news.headlines,
         toolkit=toolkit,
         on_progress=progress,
     )
@@ -221,7 +270,12 @@ def run_daily(
     progress(f"Stored {n_val} fresh valuation(s) → data/valuations/.")
     if valuations.write_board():
         progress("Updated market opportunity board → data/opportunities.md.")
+    # Audit: macro read, the sector trend map, and the per-finalist news the agent
+    # fetched after selection (headlines now attached to the finalist tickers).
+    audit.write_news(as_of, macro, market_news, shortlist, sector_scan)
     audit.write_reasoning(as_of, brain.strategy, brain.assessments, decision)
+    if SETTINGS.write_audit:
+        progress("Saved macro + sector map + per-name news read → data/news/.")
     if SETTINGS.write_audit:
         progress(f"Wrote full reasoning → data/logs/{as_of.isoformat()}-reasoning.md.")
 

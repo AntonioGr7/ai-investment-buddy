@@ -99,7 +99,12 @@ class SectorStat(BaseModel):
     etf_ret_1m: float | None = None
     etf_ret_3m: float | None = None
     etf_ret_6m: float | None = None
+    etf_ret_12m: float | None = None
     etf_ret_ytd: float | None = None
+    # Durability label from the long-run trend vs the recent move:
+    # durable-up / durable-down / dip-in-uptrend / recovering / choppy.
+    # 'dip-in-uptrend' is the prime contrarian entry (strong 6-12m, weak recently).
+    trend: str = ""
 
     def one_line(self) -> str:
         def p(v):
@@ -111,8 +116,11 @@ class SectorStat(BaseModel):
             out = (
                 f"{self.sector} ({self.etf}): 1w {p(self.etf_ret_1w)}, "
                 f"1m {p(self.etf_ret_1m)}, 3m {p(self.etf_ret_3m)}, "
-                f"6m {p(self.etf_ret_6m)}, YTD {p(self.etf_ret_ytd)}"
+                f"6m {p(self.etf_ret_6m)}, 12m {p(self.etf_ret_12m)}, "
+                f"YTD {p(self.etf_ret_ytd)}"
             )
+            if self.trend:
+                out += f" [{self.trend}]"
         else:
             out = (
                 f"{self.sector} (n={self.n}): 1m {p(self.ret_1m)}, "
@@ -210,19 +218,38 @@ class ValuationAssessment(BaseModel):
     # e.g. HYPERGROWTH, COMPOUNDER, VALUE, CYCLICAL, FINANCIAL, REIT, TURNAROUND.
     archetype: str = ""
     valuation_method: str = ""  # the primary method used and why it fits
-    fair_value: float | None = None  # estimated intrinsic value per share
+    fair_value: float | None = None  # probability-weighted expected intrinsic value/share
     current_price: float | None = None
     upside_pct: float | None = None  # (fair_value/price - 1) * 100
+    # Downside scenario: the bear-case value and % to it from current price (the risk).
+    bear_value: float | None = None
+    downside_pct: float | None = None  # (bear_value/price - 1) * 100, negative
+    # Reward/risk: expected upside vs downside magnitude. >1 = favourable asymmetry.
+    risk_reward: float | None = None
     # UNDERVALUED | FAIRLY_VALUED | OVERVALUED
     valuation_verdict: str = "FAIRLY_VALUED"
     quality_score: int = Field(default=3, ge=1, le=5)  # business quality
     margin_of_safety: bool = False
+    # Structural/existential risk to the business model (moat erosion, secular
+    # disruption — e.g. AI displacing an incumbent): LOW | MEDIUM | HIGH | SEVERE.
+    # A cheap price with SEVERE structural risk is a value trap, not an opportunity.
+    structural_risk: str = "MEDIUM"
+    # Why the market prices it where it does — the bear case the market is weighting
+    # that we must address before claiming it's mispriced.
+    why_market_disagrees: str = ""
+    # What re-rates the stock and over what horizon (short <6m / medium 6-18m) — we
+    # want disconnects that close in short-to-medium term, not someday.
+    rerating_catalyst: str = ""
     # What today's price is implying (growth/margins/multiple) — the reverse
     # valuation — and whether the market looks right about it.
     market_implied: str = ""
     # OVERREACTING | UNDERREACTING | FAIR — our call on the market's pricing.
     market_view: str = "FAIR"
     mispricing_thesis: str = ""  # if mispriced: why, and what the market is missing
+    # Per-name news due diligence (fetched AFTER selection): the material recent
+    # news and how it affects the stock, plus the prevailing sentiment.
+    news_sentiment: str = ""  # BULLISH | NEUTRAL | BEARISH
+    news_assessment: str = ""  # material news + likely impact + is sentiment overdone?
     bull_case: str = ""
     bear_case: str = ""
     key_risks: str = ""
@@ -241,10 +268,13 @@ class ValuationAssessment(BaseModel):
         up = f"{self.upside_pct:+.0f}%" if self.upside_pct is not None else "?"
         arch = f"{self.archetype} | " if self.archetype else ""
         mkt = f" | market {self.market_view}" if self.market_view else ""
+        rr = f" | R/R {self.risk_reward}" if self.risk_reward is not None else ""
+        down = f" | downside {self.downside_pct:+.0f}%" if self.downside_pct is not None else ""
+        sr = f" | struct-risk {self.structural_risk}" if self.structural_risk else ""
         return (
             f"{self.ticker}: {arch}{self.recommendation} | {self.valuation_verdict} | "
-            f"fair {fv} vs {px} ({up}) | quality {self.quality_score}/5 | "
-            f"MoS={'Y' if self.margin_of_safety else 'N'} | conf {self.confidence}/5{mkt}"
+            f"fair {fv} vs {px} ({up}){down}{rr} | quality {self.quality_score}/5 | "
+            f"MoS={'Y' if self.margin_of_safety else 'N'} | conf {self.confidence}/5{mkt}{sr}"
         )
 
 

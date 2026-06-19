@@ -15,15 +15,21 @@ experiment is fully auditable.
 
 A daily cycle (`aib run`):
 
-1. **Ingest** — prices, fundamentals, macro, and news/headlines for the whole
-   S&P 500 + Nasdaq-100 universe (~500 names).
-2. **Sector scan** — a per-sector performance map (Finviz-style), combining a
-   top-down read from the **SPDR sector ETFs** (market-cap-weighted 1w/1m/3m/6m/
-   YTD returns for Technology, Communication Services, Consumer Cyclical,
-   Healthcare, Financials, Energy, …) with a bottom-up aggregation of our
-   constituents (breadth, median drawdown), ranked worst-first. This is the
-   contrarian radar: it surfaces whole sectors the market is repricing lower
-   (e.g. a software sell-off on AI-disruption fear) that single-name screens miss.
+The cycle is deliberately **top-down then targeted**: analyse durable trends,
+choose names, and *then* research each chosen name's news — rather than reacting
+to whatever headline is loudest.
+
+1. **Ingest** — prices + fundamentals for the universe (~500 names) and a *lean*
+   macro/policy read (Fed, rates, regime) — not a broad headline dump. Company
+   news is **not** pulled here; it's fetched per-name after selection (step 4).
+2. **Sector trend map** — a per-sector performance map (Finviz-style), from the
+   **SPDR sector ETFs** (market-cap-weighted 1w/1m/3m/6m/**12m**/YTD) plus a
+   bottom-up read of our constituents (breadth, drawdown). Each sector gets a
+   **trend label** reading the long run vs the recent move: `durable-up`,
+   `durable-down` (secular decline / value trap), `recovering`, or
+   **`dip-in-uptrend`** — structurally strong over 6–12m but sold off recently.
+   That last one is the prime contrarian entry: the durable trend is the evidence
+   the dip is an overreaction, not a broken story. Trend = conviction, dip = entry.
 3. **Screen** — a cheap quant funnel narrows the universe to a shortlist (~25)
    from a *balanced* mix of buckets so contrarian setups aren't drowned out:
    momentum (trend leaders), movers (today's news-driven jumps), **oversold**
@@ -32,21 +38,35 @@ A daily cycle (`aib run`):
    are always carried through. *Only the shortlist gets the expensive
    fundamentals + news lookups.*
 4. **Decide** — a **3-stage LangGraph brain** runs:
-   - **Strategist** reads the macro/news regime *and the sector scan*, and
-     decides which beaten-down areas are overreactions (opportunity) vs deserved
-     de-ratings (value traps), then picks finalists accordingly. Queries memory.
+   - **Strategist** leads with the sector trend map + lean macro and picks
+     finalists grounded in **durable 6–12m trends and value** — favouring
+     dislocations within durable uptrends, avoiding secular-decline value traps.
+     It does **not** look at company news yet (selection stays trend/value-driven).
+   - **Per-finalist news** — *now* the agent fetches the material recent news for
+     each chosen name (targeted due diligence, not an ambient dump).
    - **Analyst** classifies each name (hyper-growth / compounder / value /
      cyclical / financial / REIT / turnaround) and values it with the method
-     that *fits*. It has real **valuation calculators** it drives with its own
-     estimated inputs — a two-stage **DCF**, a **reverse-DCF** (what growth does
-     today's price imply?), and an **exit-multiple** model — so the fair value is
-     computed, not eyeballed. The reverse-DCF is the cleanest "is the market
-     over/under-reacting?" test. Sell-side targets are a lagging cross-check, not
-     an anchor.
-   - **PM** allocates as target weights — and may only buy names with an
-     acceptable valuation. Doing nothing / holding cash is always allowed.
+     that *fits*, driving real **calculators** with its own inputs — two-stage
+     **DCF**, **reverse-DCF** (what growth does today's price imply?),
+     **exit-multiple**, and a **probability-weighted scenario** tool. The fair
+     value is the *expected value* across honest bear/base/bull scenarios — the
+     way the market itself prices a stock. It must **steelman why the market
+     disagrees** (the bear case the price is already pricing), flag
+     **structural/existential risk** (moat erosion, disruption — a cheap price
+     with SEVERE structural risk is a *value trap*, not a bargain), and report the
+     **downside, risk/reward, and a re-rating catalyst + horizon**. It also judges
+     **news & sentiment**: overdone vs fundamentals, or justified? Sell-side
+     targets are a lagging cross-check, not an anchor.
+   - **PM** allocates as target weights with **patience as the default** — this is
+     a long-run game, so the burden of proof is on *action*. It opens/adds only on
+     a genuine fat pitch (favourable risk/reward, real conviction, clearly better
+     than cash), trims/sells only when a thesis actually broke, and a **zero-trade
+     day is a success** if nothing clears the bar. It sees its own recent turnover
+     and resists churn; cash is treated as a legitimate position.
 5. **Execute (paper)** — orders become trades against live prices, enforcing
-   risk guardrails (max 20% per name, no leverage, no shorting) plus slippage.
+   risk guardrails (max 20% per name, no leverage, no shorting), slippage, and an
+   **anti-churn band** that drops trivial rebalances (weight drift under ~3% of
+   NAV) so the book isn't nibbled to death by slippage.
 6. **Record & consolidate** — portfolio, trade ledger, NAV history (with
    benchmark levels), a written journal entry, and an updated rolling
    **narrative** are all persisted under `data/`.
@@ -115,11 +135,13 @@ a capped history) thereafter. So our coverage of the market accumulates run
 after run, and the files travel in export/import snapshots.
 
 That corpus powers a **market-wide opportunity board**: `aib opportunities` lists
-*every* name we've ever valued — cost (price) vs opportunity (fair value, upside,
-score) — ranked so you can decide what to watch across the whole market, not just
-today's shortlist. The score blends recommendation, upside to a conservative fair
-value, quality, margin of safety, conviction, and whether the market looks to be
-over-reacting. Filter with `--buys`, `--sector`, `--min-upside`, cap with
+*every* name we've ever valued, ranked by **risk-adjusted** attractiveness — the
+goal is the best **risk/reward** on a short-to-medium horizon, not the biggest
+upside or the biggest drop. The score rewards favourable reward/risk asymmetry and
+penalises downside and especially **structural risk**, so a cheap-but-being-
+destroyed name (a PayPal-at-lows value trap) sinks below a strong name with
+limited downside. The board shows upside, **downside**, **R/R**, and the
+**structural-risk** flag side by side. Filter with `--buys`, `--sector`, `--min-upside`, cap with
 `--limit`, or dump the full thing with `--csv board.csv`. The same board is also
 written to **`data/opportunities.md`** after every run, so there's always a
 current table to open. Found one you like? `aib watchlist add TICKER`.
@@ -177,6 +199,14 @@ Pick your brain via `AIB_LLM_PROVIDER` (`anthropic` | `openai` | `gemini`) and
 set the matching key. `openai` also covers any OpenAI-compatible endpoint
 (OpenRouter, Together, Groq, local) via `AIB_OPENAI_BASE_URL`.
 
+**Optional — Finnhub** (free tier, 60 req/min): add `FINNHUB_API_KEY=...` to
+`.env` and the bot automatically uses Finnhub for **company news** and
+**fundamentals** (markedly better than yfinance for both — and news is what
+feeds the per-name sentiment/impact analysis). Bulk price history stays on
+yfinance. No key — or if you hit the daily/rate limit mid-run — it falls back to
+yfinance automatically (once a 429 is seen it stops calling Finnhub for the rest
+of the run and uses yfinance), so a quota wall never leaves the agent blind.
+
 ## Usage
 
 ```bash
@@ -220,7 +250,8 @@ src/ai_investment_buddy/
 Two seams are designed for swapping without touching callers:
 
 - **Data providers** — implement the Protocols in `data/base.py` and register in
-  `data/__init__.py` to add paid sources (Polygon, FMP, NewsAPI, FRED, ...).
+  `data/__init__.py`. **Finnhub** (`data/finnhub_provider.py`) is already wired
+  for news + fundamentals; add others (Polygon, FMP, FRED, ...) the same way.
 - **LLM backends** — add a client in `brain/llm.py` satisfying `LLMClient`.
 
 ## Status

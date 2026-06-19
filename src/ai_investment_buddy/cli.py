@@ -387,12 +387,26 @@ def _assessment_table(assessments, title: str = "Analyst valuations (fair value 
 
 def _render_assessment_detail(a) -> None:
     body = []
+    sr_color = {"LOW": "green", "MEDIUM": "yellow", "HIGH": "red", "SEVERE": "bold red"}
+    up = f"{a.upside_pct:+.0f}%" if a.upside_pct is not None else "?"
+    down = f"{a.downside_pct:+.0f}%" if a.downside_pct is not None else "?"
+    rr = f"{a.risk_reward}" if a.risk_reward is not None else "?"
+    body.append(
+        f"[bold]Risk/reward {rr}[/bold]  ·  upside {up}  ·  downside {down}  ·  "
+        f"structural risk [{sr_color.get(a.structural_risk,'white')}]{a.structural_risk}[/]"
+    )
+    if a.why_market_disagrees:
+        body.append(f"[bold]Why the market disagrees:[/bold] {a.why_market_disagrees}")
+    if a.rerating_catalyst:
+        body.append(f"[bold]Catalyst / horizon:[/bold] {a.rerating_catalyst}")
     if a.valuation_method:
         body.append(f"[bold]Method:[/bold] {a.valuation_method}")
     if a.market_implied:
         body.append(f"[bold]Market implies:[/bold] {a.market_implied}")
     if a.mispricing_thesis:
         body.append(f"[bold]Mispricing thesis:[/bold] {a.mispricing_thesis}")
+    if a.news_assessment:
+        body.append(f"[bold]News ({a.news_sentiment or 'n/a'}):[/bold] {a.news_assessment}")
     body.append(f"[bold]Bull:[/bold] {a.bull_case}")
     body.append(f"[bold]Bear:[/bold] {a.bear_case}")
     body.append(f"[bold]Risks:[/bold] {a.key_risks}")
@@ -516,35 +530,37 @@ def opportunities(
 
     total = len(rows)
     shown = rows if limit in (0, None) else rows[:limit]
-    table = Table(title=f"Opportunity board — {len(shown)} of {total} valued names")
-    for col in ("Score", "Ticker", "Sector", "Type", "Rec", "Market", "Price", "Fair", "Upside", "Q", "MoS", "Conf", "As of"):
+    sr_color = {"LOW": "green", "MEDIUM": "yellow", "HIGH": "red", "SEVERE": "bold red"}
+    table = Table(title=f"Opportunity board — {len(shown)} of {total} valued names (risk-adjusted)")
+    for col in ("Score", "Ticker", "Sector", "Rec", "R/R", "Up", "Down", "StructRisk", "Price", "Fair", "MoS", "As of"):
         table.add_column(col, justify="right")
     for r in shown:
         c = _REC_COLOR.get(r["recommendation"], "white")
-        mc = _MKT_COLOR.get(r["market_view"], "white")
         up = f"{r['upside_pct']:+.0f}%" if r["upside_pct"] is not None else "?"
         up_c = "green" if (r["upside_pct"] or 0) > 0 else "red"
+        down = f"{r['downside_pct']:+.0f}%" if r["downside_pct"] is not None else "?"
+        rr = f"{r['risk_reward']:.1f}" if r["risk_reward"] is not None else "?"
+        sr = r["structural_risk"] or "?"
         score_c = "green" if r["score"] > 0 else "dim"
         table.add_row(
             f"[{score_c}]{r['score']:+.1f}[/{score_c}]",
             r["ticker"],
-            f"[dim]{(r['sector'] or '?')[:14]}[/dim]",
-            f"[dim]{r['archetype'].title()}[/dim]" if r["archetype"] else "[dim]?[/dim]",
+            f"[dim]{(r['sector'] or '?')[:12]}[/dim]",
             f"[{c}]{r['recommendation']}[/{c}]",
-            f"[{mc}]{r['market_view'].title()}[/{mc}]" if r["market_view"] else "",
+            rr,
+            f"[{up_c}]{up}[/{up_c}]",
+            f"[red]{down}[/red]",
+            f"[{sr_color.get(sr,'white')}]{sr}[/]",
             f"${r['current_price']:.0f}" if r["current_price"] else "?",
             f"${r['fair_value']:.0f}" if r["fair_value"] else "?",
-            f"[{up_c}]{up}[/{up_c}]",
-            f"{r['quality_score']}/5",
             "[green]Y[/green]" if r["margin_of_safety"] else "[dim]—[/dim]",
-            f"{r['confidence']}/5",
             r["last_assessed"],
         )
     console.print(table)
     console.print(
-        "[dim]Score blends recommendation, upside, quality, margin of safety, conviction, and "
-        "market over-reaction. Watch one with [bold]aib watchlist add TICKER[/bold]; deep-dive "
-        "with [bold]aib valuate TICKER[/bold]. Full board: data/opportunities.md[/dim]"
+        "[dim]Risk-adjusted score: reward/risk + downside − structural-risk penalty (a cheap "
+        "value trap sinks). Watch one with [bold]aib watchlist add TICKER[/bold]; deep-dive with "
+        "[bold]aib valuate TICKER[/bold]. Full board: data/opportunities.md[/dim]"
     )
 
 

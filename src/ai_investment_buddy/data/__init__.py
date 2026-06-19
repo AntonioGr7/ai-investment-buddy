@@ -22,6 +22,7 @@ from .base import (
 
 @lru_cache(maxsize=1)
 def get_providers() -> "Providers":
+    from .finnhub_provider import FinnhubFundamentals, FinnhubNews
     from .market_news import RSSMarketNews
     from .yfinance_provider import (
         YFinanceFundamentals,
@@ -32,8 +33,8 @@ def get_providers() -> "Providers":
 
     registry = {
         "price": {"yfinance": YFinancePrices},
-        "fundamentals": {"yfinance": YFinanceFundamentals},
-        "news": {"yfinance": YFinanceNews},
+        "fundamentals": {"yfinance": YFinanceFundamentals, "finnhub": FinnhubFundamentals},
+        "news": {"yfinance": YFinanceNews, "finnhub": FinnhubNews},
         "macro": {"yfinance": YFinanceMacro},
         "market_news": {"rss": RSSMarketNews},
     }

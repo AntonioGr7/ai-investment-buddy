@@ -32,13 +32,37 @@ _MACRO_SYMBOLS = {
 
 class YFinancePrices:
     def latest_price(self, ticker: str) -> float | None:
+        """Freshest valid price for one ticker.
+
+        The daily bar for the current/most-recent session often has a NaN close
+        (volume present, close not yet settled), so we must NOT blindly take the
+        last daily row — that returns NaN or silently falls back to a day-old
+        close. We prefer a fresh intraday print, then the last *valid* daily
+        close, and only return a real positive number."""
+        t = yf.Ticker(ticker)
+        # 1) Fresh intraday last trade (captures today's move).
         try:
-            df = yf.Ticker(ticker).history(period="5d", auto_adjust=True)
-            if df.empty:
-                return None
-            return float(df["Close"].iloc[-1])
+            intra = t.history(period="1d", interval="1m", auto_adjust=True)
+            if not intra.empty:
+                c = intra["Close"].dropna()
+                if len(c):
+                    px = float(c.iloc[-1])
+                    if px == px and px > 0:  # not NaN, positive
+                        return px
         except Exception:
-            return None
+            pass
+        # 2) Last *valid* daily close.
+        try:
+            daily = t.history(period="7d", auto_adjust=True)
+            if not daily.empty:
+                c = daily["Close"].dropna()
+                if len(c):
+                    px = float(c.iloc[-1])
+                    if px == px and px > 0:
+                        return px
+        except Exception:
+            pass
+        return None
 
     def history(
         self, tickers: list[str], lookback_days: int = 260

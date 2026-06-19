@@ -135,6 +135,50 @@ def reverse_dcf(
     }
 
 
+def probability_weighted_value(scenarios: list, current_price: float | None = None) -> dict:
+    """Probability-weight bear/base/bull scenario values into one expected value —
+    mirroring how the MARKET prices a stock (the consensus of all outcomes, weighted).
+
+    Each scenario is {label, value, probability}; probabilities are normalised by
+    their sum (percent or fraction both fine). Returns the expected value and, vs
+    the current price, the expected upside, the DOWNSIDE to the worst scenario, and
+    the reward/risk ratio — so a name is judged on risk-adjusted asymmetry, not raw
+    upside."""
+    if not scenarios:
+        raise ValueError("provide at least one scenario")
+    total_p = 0.0
+    for s in scenarios:
+        p = float(s.get("probability", 0) or 0)
+        if p < 0:
+            raise ValueError("probabilities must be non-negative")
+        total_p += p
+    if total_p <= 0:
+        raise ValueError("probabilities must sum to > 0")
+
+    ev = sum(float(s["value"]) * float(s.get("probability", 0) or 0) for s in scenarios) / total_p
+    values = [float(s["value"]) for s in scenarios]
+    out = {
+        "expected_value": round(ev, 2),
+        "worst_case_value": round(min(values), 2),
+        "best_case_value": round(max(values), 2),
+        "normalized_probabilities": {
+            str(s.get("label", i)): round(float(s.get("probability", 0) or 0) / total_p, 3)
+            for i, s in enumerate(scenarios)
+        },
+    }
+    if current_price and current_price > 0:
+        exp_up = (ev / current_price - 1) * 100
+        downside = (min(values) / current_price - 1) * 100
+        out["expected_upside_pct"] = round(exp_up, 1)
+        out["downside_pct"] = round(downside, 1)
+        out["best_case_upside_pct"] = round((max(values) / current_price - 1) * 100, 1)
+        # Reward/risk: expected upside vs magnitude of downside to the worst case.
+        down_mag = abs(min(0.0, downside))
+        up_mag = max(0.0, exp_up)
+        out["reward_risk"] = round(up_mag / down_mag, 2) if down_mag > 1e-9 else None
+    return out
+
+
 def exit_multiple(
     base_metric_per_share: float,
     growth_rate: float,
@@ -213,6 +257,37 @@ VALUATION_TOOL_SPECS: list[dict] = [
         },
     },
     {
+        "name": "probability_weighted_value",
+        "description": (
+            "Probability-weight your bear/base/bull scenario values into one expected "
+            "value — the way the MARKET prices a stock. Returns expected value, the "
+            "DOWNSIDE to your worst case, and the reward/risk ratio vs the current "
+            "price. Use this to judge risk-adjusted asymmetry, and to check whether a "
+            "big gap to the market price survives once you weight the bear case honestly."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "scenarios": {
+                    "type": "array",
+                    "description": "Bear/base/bull (or more) outcomes. Probabilities should reflect "
+                    "real likelihoods incl. structural-risk scenarios the market is pricing.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "label": {"type": "string", "description": "e.g. 'bear: AI erodes moat'"},
+                            "value": {"type": "number", "description": "Fair value per share in this scenario."},
+                            "probability": {"type": "number", "description": "Likelihood (percent or fraction)."},
+                        },
+                        "required": ["label", "value", "probability"],
+                    },
+                },
+                "current_price": {"type": "number", "description": "Current share price, for upside/downside/RR."},
+            },
+            "required": ["scenarios", "current_price"],
+        },
+    },
+    {
         "name": "exit_multiple",
         "description": (
             "Earnings-power valuation: grow a per-share metric (EPS, FFO, FCF/share) for "
@@ -237,6 +312,7 @@ _DISPATCH: dict[str, Callable[..., dict]] = {
     "dcf_two_stage": dcf_two_stage,
     "reverse_dcf": reverse_dcf,
     "exit_multiple": exit_multiple,
+    "probability_weighted_value": probability_weighted_value,
 }
 
 
@@ -244,6 +320,11 @@ def _summarize(name: str, result: dict) -> str:
     """A compact one-line summary for the progress/audit log."""
     if name == "reverse_dcf":
         return f"reverse_dcf → implied growth {result.get('implied_growth_rate_pct')}%"
+    if name == "probability_weighted_value":
+        return (
+            f"scenarios → EV ${result.get('expected_value')}/sh, "
+            f"downside {result.get('downside_pct')}%, R/R {result.get('reward_risk')}"
+        )
     fv = result.get("fair_value_per_share")
     return f"{name} → ${fv}/sh" if fv is not None else f"{name} → ok"
 

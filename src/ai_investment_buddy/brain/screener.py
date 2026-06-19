@@ -185,8 +185,13 @@ def enrich(
     tickers: list[str],
     metrics: dict[str, TickerData],
     providers,
+    with_news: bool = True,
 ) -> list[TickerData]:
-    """Attach fundamentals + headlines to the shortlist only."""
+    """Attach fundamentals (and optionally headlines) to the shortlist.
+
+    In the daily pipeline ``with_news=False``: the strategist selects on trends +
+    valuation, and news is fetched per-finalist *after* selection (targeted due
+    diligence rather than an ambient dump)."""
     enriched: list[TickerData] = []
     for t in tickers:
         td = metrics.get(t) or TickerData(ticker=t)
@@ -194,6 +199,7 @@ def enrich(
         for k, v in f.items():
             if v is not None and getattr(td, k, None) in (None, ""):
                 setattr(td, k, v)
-        td.headlines = providers.news.headlines(t, limit=4)
+        if with_news:
+            td.headlines = providers.news.headlines(t, limit=4)
         enriched.append(td)
     return enriched

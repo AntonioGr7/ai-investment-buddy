@@ -84,19 +84,29 @@ def _fmt_assessment_full(a: ValuationAssessment) -> str:
     px = f"${a.current_price:.2f}" if a.current_price is not None else "?"
     up = f"{a.upside_pct:+.0f}%" if a.upside_pct is not None else "?"
     cached = " _(reused from cache)_" if getattr(a, "from_cache", False) else ""
+    down = f"{a.downside_pct:+.0f}%" if a.downside_pct is not None else "?"
+    rr = f"{a.risk_reward}" if a.risk_reward is not None else "?"
     lines = [
         f"### {a.ticker} — {a.archetype or '?'} — **{a.recommendation}** "
         f"({a.market_view}){cached}",
         f"- Fair value {fv} vs price {px} → upside {up} · {a.valuation_verdict} · "
         f"quality {a.quality_score}/5 · MoS {'yes' if a.margin_of_safety else 'no'} · "
         f"confidence {a.confidence}/5",
+        f"- **Risk/reward {rr}** · downside {down} · structural risk "
+        f"**{a.structural_risk or '?'}**",
     ]
+    if a.why_market_disagrees:
+        lines.append(f"- **Why the market disagrees:** {a.why_market_disagrees}")
+    if a.rerating_catalyst:
+        lines.append(f"- **Catalyst / horizon:** {a.rerating_catalyst}")
     if a.valuation_method:
         lines.append(f"- **Method:** {a.valuation_method}")
     if a.market_implied:
         lines.append(f"- **Market implies:** {a.market_implied}")
     if a.mispricing_thesis:
         lines.append(f"- **Mispricing thesis:** {a.mispricing_thesis}")
+    if a.news_assessment or a.news_sentiment:
+        lines.append(f"- **News ({a.news_sentiment or 'n/a'}):** {a.news_assessment}")
     if a.bull_case:
         lines.append(f"- **Bull:** {a.bull_case}")
     if a.bear_case:

@@ -159,21 +159,33 @@ _REC_SCORE = {
     "TRIM": -1.5, "SELL": -2.5, "AVOID": -2.5,
 }
 _MKT_SCORE = {"OVERREACTING": 1.0, "FAIR": 0.0, "UNDERREACTING": -1.0}
+# Structural/existential risk dominates — a cheap value trap must NOT rank well.
+_STRUCT_PENALTY = {"LOW": 0.5, "MEDIUM": 0.0, "HIGH": -1.5, "SEVERE": -3.5}
 
 
 def opportunity_score(a: ValuationAssessment) -> float:
-    """A blended attractiveness score for cross-market ranking.
+    """A RISK-ADJUSTED attractiveness score for cross-market ranking.
 
-    Rewards a buy-side recommendation, real upside to a conservatively-estimated
-    fair value, business quality, a genuine margin of safety, conviction, and the
-    market over-reacting (mispriced cheap). Higher = more compelling."""
+    The objective is best risk/reward on a short-to-medium horizon — not raw
+    upside. So we reward favourable asymmetry (reward/risk), penalise downside and
+    especially structural risk (a cheap name being structurally destroyed is a
+    trap), and fold in recommendation, quality, conviction and the over-reaction
+    read. Higher = more compelling."""
     s = 0.0
     s += _REC_SCORE.get(a.recommendation, 0.0)
-    s += (a.upside_pct or 0.0) / 20.0  # +20% upside ≈ +1.0
+    # Reward/risk asymmetry is the heart of it; fall back to raw upside if absent.
+    if a.risk_reward is not None:
+        s += min(a.risk_reward, 4.0)
+    else:
+        s += (a.upside_pct or 0.0) / 20.0
+    # Penalise downside to the bear case (downside_pct is negative).
+    if a.downside_pct is not None:
+        s += max(a.downside_pct, -60.0) / 30.0  # -30% downside ≈ -1.0, capped
     s += (a.quality_score - 3) * 0.3
     s += (a.confidence - 3) * 0.2
     s += 1.0 if a.margin_of_safety else 0.0
     s += _MKT_SCORE.get(a.market_view, 0.0) * 0.5
+    s += _STRUCT_PENALTY.get(a.structural_risk, 0.0)
     return round(s, 2)
 
 
@@ -191,8 +203,9 @@ def rank_opportunities(
 # --- The market-wide board ---------------------------------------------------
 BOARD_COLUMNS = [
     "score", "ticker", "sector", "archetype", "recommendation", "market_view",
-    "current_price", "fair_value", "upside_pct", "valuation_verdict",
-    "quality_score", "margin_of_safety", "confidence", "last_assessed",
+    "current_price", "fair_value", "upside_pct", "downside_pct", "risk_reward",
+    "structural_risk", "valuation_verdict", "quality_score", "margin_of_safety",
+    "confidence", "rerating_catalyst", "last_assessed",
 ]
 
 
@@ -213,10 +226,14 @@ def board_rows(records: list[ValuationRecord] | None = None) -> list[dict]:
             "current_price": a.current_price,
             "fair_value": a.fair_value,
             "upside_pct": a.upside_pct,
+            "downside_pct": a.downside_pct,
+            "risk_reward": a.risk_reward,
+            "structural_risk": a.structural_risk or "",
             "valuation_verdict": a.valuation_verdict,
             "quality_score": a.quality_score,
             "margin_of_safety": a.margin_of_safety,
             "confidence": a.confidence,
+            "rerating_catalyst": a.rerating_catalyst or "",
             "last_assessed": rec.last_assessed.isoformat(),
         })
     return rows
@@ -232,7 +249,7 @@ def format_board_markdown(records: list[ValuationRecord] | None = None) -> str:
         v = r[k]
         if v is None:
             return "?"
-        if k == "upside_pct":
+        if k in ("upside_pct", "downside_pct"):
             return f"{v:+.0f}%"
         if k in ("current_price", "fair_value"):
             return f"${v:.2f}"
@@ -240,10 +257,15 @@ def format_board_markdown(records: list[ValuationRecord] | None = None) -> str:
             return "Y" if v else "—"
         if k == "score":
             return f"{v:+.1f}"
+        if k == "risk_reward":
+            return f"{v:.1f}"
+        if k == "rerating_catalyst":
+            return (str(v)[:40] + "…") if len(str(v)) > 40 else str(v)
         return str(v)
 
     headers = ["Score", "Ticker", "Sector", "Type", "Rec", "Market", "Price",
-               "Fair", "Upside", "Verdict", "Q", "MoS", "Conf", "As of"]
+               "Fair", "Upside", "Down", "R/R", "StructRisk", "Verdict", "Q",
+               "MoS", "Conf", "Catalyst", "As of"]
     lines = [
         f"# Opportunity board — {len(rows)} names valued",
         "",
