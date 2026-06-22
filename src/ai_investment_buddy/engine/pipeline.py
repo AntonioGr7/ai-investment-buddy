@@ -43,6 +43,8 @@ class RunResult:
     nav_after: float
     strategy: StrategistView | None = None
     assessments: list[ValuationAssessment] = field(default_factory=list)
+    # ticker -> avg daily dollar volume, for realistic market-impact slippage at commit.
+    liquidity: dict[str, float] = field(default_factory=dict)
     dry_run: bool = False
     log: list[str] = field(default_factory=list)
 
@@ -190,6 +192,14 @@ def _persist_predictions(brain, progress) -> None:
         progress(f"(prediction logging skipped: {e})")
 
 
+def _recorded_levels(macro) -> dict[str, float]:
+    """Index levels to store in nav_history each run: the beat-benchmarks PLUS the
+    factor proxies (e.g. Russell 2000) that attribution needs to separate
+    selection alpha from factor (size) exposure."""
+    labels = list(SETTINGS.benchmarks) + list(SETTINGS.factor_proxies)
+    return {label: macro.indicators[label] for label in labels if label in macro.indicators}
+
+
 def _ensure_prices(providers, prices: dict[str, float], tickers: list[str]) -> None:
     for t in tickers:
         cur = prices.get(t)
@@ -284,6 +294,10 @@ def run_daily(
     industry_scan = sectors.format_industry_scan(industry_stats)
     if punished_industries:
         progress(f"Industry scan: most punished → {', '.join(punished_industries[:4])}.")
+
+    # Liquidity map (avg daily $ volume) for realistic market-impact slippage —
+    # essential now that the universe includes thinner small-caps.
+    liquidity = {t: td.avg_dollar_volume for t, td in metrics.items() if td.avg_dollar_volume}
 
     holdings = list(portfolio.positions.keys())
     shortlist_tickers = screener.screen(
@@ -398,6 +412,7 @@ def run_daily(
             nav_after=portfolio.nav(prices),
             strategy=brain.strategy,
             assessments=brain.assessments,
+            liquidity=liquidity,
             dry_run=True,
             log=log,
         )
@@ -405,7 +420,7 @@ def run_daily(
     # Make sure we have prices for any ticker the AI wants to trade.
     _ensure_prices(providers, prices, [o.ticker for o in decision.orders])
 
-    trades = execute(portfolio, decision, prices)
+    trades = execute(portfolio, decision, prices, liquidity)
     progress(f"Executed {len(trades)} trade(s).")
 
     store.save_portfolio(portfolio)
@@ -430,7 +445,7 @@ def run_daily(
         cash=portfolio.cash,
         invested=portfolio.invested_value(prices),
         n_positions=len(portfolio.positions),
-        benchmarks=current_benchmarks,
+        benchmarks=_recorded_levels(macro),
     )
     progress(f"Recorded NAV ${nav_after:,.2f}.")
     _auto_export(progress)
@@ -448,6 +463,7 @@ def run_daily(
         nav_after=nav_after,
         strategy=brain.strategy,
         assessments=brain.assessments,
+        liquidity=liquidity,
         dry_run=False,
         log=log,
     )
@@ -471,7 +487,7 @@ def commit(dry: RunResult, on_progress=None) -> RunResult:
     prices = dict(dry.prices)
     _ensure_prices(providers, prices, [o.ticker for o in dry.decision.orders])
 
-    trades = execute(portfolio, dry.decision, prices)
+    trades = execute(portfolio, dry.decision, prices, dry.liquidity)
     progress(f"Executed {len(trades)} trade(s).")
 
     store.save_portfolio(portfolio)
@@ -496,11 +512,7 @@ def commit(dry: RunResult, on_progress=None) -> RunResult:
     except Exception as e:
         progress(f"(narrative consolidation skipped: {e})")
 
-    current_benchmarks = {
-        label: dry.macro.indicators[label]
-        for label in SETTINGS.benchmarks
-        if label in dry.macro.indicators
-    }
+    current_benchmarks = _recorded_levels(dry.macro)
     nav_after = portfolio.nav(prices)
     store.append_nav(
         as_of=dry.as_of,

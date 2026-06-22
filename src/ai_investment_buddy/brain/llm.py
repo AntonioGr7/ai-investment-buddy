@@ -51,6 +51,7 @@ class AnthropicClient:
         resp = self.client.messages.create(
             model=SETTINGS.decision_model,
             max_tokens=SETTINGS.max_decision_tokens,
+            temperature=SETTINGS.decision_temperature,
             system=system,
             tools=[tool],
             tool_choice={"type": "tool", "name": tool["name"]},
@@ -71,6 +72,7 @@ class AnthropicClient:
             resp = self.client.messages.create(
                 model=SETTINGS.decision_model,
                 max_tokens=SETTINGS.max_decision_tokens,
+                temperature=SETTINGS.decision_temperature,
                 system=system,
                 tools=tools,
                 tool_choice={"type": "any"},
@@ -105,6 +107,26 @@ class OpenAIClient:
             api_key=SETTINGS.openai_api_key,
             base_url=SETTINGS.openai_base_url,  # None => default OpenAI endpoint
         )
+        # Some reasoning models reject temperature/seed — disable after a 400 so we
+        # don't retry on every call for the rest of the process.
+        self._sampling = True
+
+    def _create(self, **kwargs):
+        """chat.completions.create with low temperature + fixed seed for
+        reproducibility, falling back to provider defaults if the model rejects them."""
+        if self._sampling:
+            extra = {"temperature": SETTINGS.decision_temperature}
+            if SETTINGS.decision_seed is not None:
+                extra["seed"] = SETTINGS.decision_seed
+            try:
+                return self.client.chat.completions.create(**kwargs, **extra)
+            except Exception as e:
+                msg = str(e).lower()
+                if any(w in msg for w in ("temperature", "seed", "unsupported", "not support")):
+                    self._sampling = False  # reasoning model: stop trying
+                else:
+                    raise
+        return self.client.chat.completions.create(**kwargs)
 
     def structured_call(self, system: str, user: str, tool: dict) -> dict:
         fn_tool = {
@@ -115,7 +137,7 @@ class OpenAIClient:
                 "parameters": tool["input_schema"],
             },
         }
-        resp = self.client.chat.completions.create(
+        resp = self._create(
             model=SETTINGS.decision_model,
             max_completion_tokens=SETTINGS.max_decision_tokens,
             messages=[
@@ -149,7 +171,7 @@ class OpenAIClient:
             {"role": "user", "content": user},
         ]
         for _ in range(max_iters):
-            resp = self.client.chat.completions.create(
+            resp = self._create(
                 model=SETTINGS.decision_model,
                 max_completion_tokens=SETTINGS.max_decision_tokens,
                 messages=messages,
@@ -196,6 +218,8 @@ class GeminiClient:
         config = types.GenerateContentConfig(
             system_instruction=system,
             max_output_tokens=SETTINGS.max_decision_tokens,
+            temperature=SETTINGS.decision_temperature,
+            seed=SETTINGS.decision_seed,
             tools=[types.Tool(function_declarations=[fn])],
             tool_config=types.ToolConfig(
                 function_calling_config=types.FunctionCallingConfig(
@@ -228,6 +252,8 @@ class GeminiClient:
         config = types.GenerateContentConfig(
             system_instruction=system,
             max_output_tokens=SETTINGS.max_decision_tokens,
+            temperature=SETTINGS.decision_temperature,
+            seed=SETTINGS.decision_seed,
             tools=[types.Tool(function_declarations=decls)],
             tool_config=types.ToolConfig(
                 function_calling_config=types.FunctionCallingConfig(mode="ANY")

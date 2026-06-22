@@ -16,15 +16,33 @@ from ..memory.portfolio import Portfolio
 from ..models import Action, Decision, Trade
 
 
-def _slip(price: float, side: Action) -> float:
-    adj = SETTINGS.slippage_bps / 10_000.0
+def _impact_frac(trade_value: float, adv: float | None) -> float:
+    """Extra slippage from market impact, scaled by how much of a day's volume the
+    trade represents. Unknown liquidity is treated as the worst case (the cap)."""
+    if not adv or adv <= 0:
+        return SETTINGS.max_slippage_frac
+    participation = trade_value / adv
+    return min(SETTINGS.max_slippage_frac, SETTINGS.liquidity_impact_coef * participation)
+
+
+def _slip(price: float, side: Action, trade_value: float = 0.0, adv: float | None = None) -> float:
+    base = SETTINGS.slippage_bps / 10_000.0
+    adj = base + _impact_frac(trade_value, adv)
     return price * (1 + adj) if side == Action.BUY else price * (1 - adj)
 
 
 def execute(
-    portfolio: Portfolio, decision: Decision, prices: dict[str, float]
+    portfolio: Portfolio,
+    decision: Decision,
+    prices: dict[str, float],
+    liquidity: dict[str, float] | None = None,
 ) -> list[Trade]:
-    """Mutate ``portfolio`` to enact ``decision``; return the executed trades."""
+    """Mutate ``portfolio`` to enact ``decision``; return the executed trades.
+
+    ``liquidity`` maps ticker -> average daily dollar volume; when present, fills
+    pay market-impact slippage proportional to how much of a day's volume they
+    represent (so small-cap fills are priced realistically, not as free)."""
+    liquidity = liquidity or {}
     nav = portfolio.nav(prices)
     if nav <= 0:
         return []
@@ -71,7 +89,7 @@ def execute(
     # 1) Sells first to free up cash.
     for ticker, value, rationale in sells:
         price = prices[ticker]
-        fill = _slip(price, Action.SELL)
+        fill = _slip(price, Action.SELL, value, liquidity.get(ticker))
         shares = min(value / price, portfolio.positions[ticker].shares)
         if shares <= 0:
             continue
@@ -95,8 +113,8 @@ def execute(
         if available <= SETTINGS.min_trade_value:
             break
         price = prices[ticker]
-        fill = _slip(price, Action.BUY)
         spend = min(value, available)
+        fill = _slip(price, Action.BUY, spend, liquidity.get(ticker))
         shares = spend / fill
         if shares * fill < SETTINGS.min_trade_value:
             continue

@@ -1,8 +1,16 @@
-"""The investable universe: S&P 500 + Nasdaq-100 constituents.
+"""The investable universe: S&P 500 + Nasdaq-100 (large) + S&P SmallCap 600.
 
 Fetched from Wikipedia and cached to disk for a day. If the network fails we
 fall back to the last cached copy so a daily run never hard-stops on a flaky
 fetch.
+
+The S&P 600 adds the small-cap sleeve — where thin analyst coverage means
+mispricings persist longer (the neglected-firm effect), the best hunting ground
+for a differentiated, calibrated view. We use the S&P 600 specifically (not the
+raw Russell 2000) because its profitability inclusion screen filters out the
+junkiest, most blow-up-prone names. Each company carries a ``cap_tier``
+('large' | 'small') so the rest of the system can demand more margin of safety,
+model realistic small-cap slippage, and separate size-factor beta from alpha.
 """
 
 from __future__ import annotations
@@ -17,6 +25,7 @@ import requests
 from .config import CACHE_DIR, ensure_dirs
 
 _SP500_URL = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
+_SP600_URL = "https://en.wikipedia.org/wiki/List_of_S%26P_600_companies"
 _NDX_URL = "https://en.wikipedia.org/wiki/Nasdaq-100"
 _CACHE_FILE = CACHE_DIR / "universe.json"
 _CACHE_TTL_HOURS = 24
@@ -34,24 +43,43 @@ def _normalize(ticker: str) -> str:
     return ticker.strip().upper().replace(".", "-")
 
 
-def _fetch_sp500() -> list[dict]:
-    tables = _read_html(_SP500_URL)
-    df = tables[0]
+def _fetch_sp_table(url: str, index_label: str, cap_tier: str) -> list[dict]:
+    """Fetch an S&P constituents table from Wikipedia (S&P 500 and S&P 600 share
+    the same column layout: Symbol, Security, GICS Sector, GICS Sub-Industry)."""
+    tables = _read_html(url)
+    # The constituents table is the first one with a Symbol/Ticker column.
+    df = None
+    for t in tables:
+        if "Symbol" in t.columns or "Ticker" in t.columns:
+            df = t
+            break
+    if df is None:
+        df = tables[0]
+    sym_col = "Symbol" if "Symbol" in df.columns else "Ticker"
     out = []
     for _, row in df.iterrows():
         out.append(
             {
-                "ticker": _normalize(str(row["Symbol"])),
+                "ticker": _normalize(str(row[sym_col])),
                 "name": str(row.get("Security", "")),
                 "sector": str(row.get("GICS Sector", "")),
                 # GICS Sub-Industry is the granular grouping (e.g. 'Semiconductors'
                 # vs 'Application Software') — the level where the dispersion that
                 # matters lives. The 11-sector view averages it all away.
                 "sub_industry": str(row.get("GICS Sub-Industry", "")),
-                "indices": ["S&P 500"],
+                "cap_tier": cap_tier,
+                "indices": [index_label],
             }
         )
     return out
+
+
+def _fetch_sp500() -> list[dict]:
+    return _fetch_sp_table(_SP500_URL, "S&P 500", "large")
+
+
+def _fetch_sp600() -> list[dict]:
+    return _fetch_sp_table(_SP600_URL, "S&P 600", "small")
 
 
 def _fetch_ndx() -> list[str]:
@@ -66,20 +94,31 @@ def _fetch_ndx() -> list[str]:
 
 def _build() -> dict:
     sp = _fetch_sp500()
-    ndx = set(_fetch_ndx())
     by_ticker = {c["ticker"]: c for c in sp}
-    # Merge Nasdaq-100 membership in; add any Nasdaq names not already present.
+
+    # Merge Nasdaq-100 membership in; add any Nasdaq names not already present
+    # (Nasdaq-100 is large-cap by construction).
+    ndx = set(_fetch_ndx())
     for t in ndx:
         if t in by_ticker:
             by_ticker[t]["indices"].append("Nasdaq 100")
         else:
             by_ticker[t] = {
-                "ticker": t,
-                "name": "",
-                "sector": "",
-                "sub_industry": "",
-                "indices": ["Nasdaq 100"],
+                "ticker": t, "name": "", "sector": "", "sub_industry": "",
+                "cap_tier": "large", "indices": ["Nasdaq 100"],
             }
+
+    # Add the S&P SmallCap 600 sleeve. Best-effort: a fetch failure leaves the
+    # large-cap universe intact rather than crashing the run.
+    try:
+        for c in _fetch_sp600():
+            if c["ticker"] in by_ticker:
+                by_ticker[c["ticker"]]["indices"].append("S&P 600")
+            else:
+                by_ticker[c["ticker"]] = c
+    except Exception:
+        pass
+
     return {
         "fetched_at": datetime.now(timezone.utc).isoformat(),
         "companies": sorted(by_ticker.values(), key=lambda c: c["ticker"]),

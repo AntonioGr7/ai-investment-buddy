@@ -45,6 +45,9 @@ from ..config import SETTINGS
 MIN_MEANINGFUL = 20
 # Need at least this many returns to compute anything at all.
 _MIN_RETURNS = 2
+# A two-factor regression (market + size) needs a few more points than a single
+# beta before the coefficients mean anything.
+_MIN_FACTOR = 8
 
 
 @dataclass
@@ -266,6 +269,74 @@ def compute_metrics(
     return out
 
 
+def factor_attribution(
+    series: list[SeriesPoint],
+    market_key: str,
+    size_key: str,
+    rf_annual: float = 0.0,
+) -> dict:
+    """Two-factor decomposition: regress portfolio excess returns on the market
+    factor and the size factor (SMB = small-cap − market), so a small-cap tilt is
+    no longer mistaken for skill.
+
+      beta_market   exposure to the broad market, controlling for size
+      beta_size     loading on the size factor. >0 = tilted small; the small-cap
+                    'edge' shows up HERE, not as alpha
+      alpha         intercept (annualized) — return left after BOTH market and
+                    size are removed. THIS is genuine selection skill
+      r_squared     how much of the variance the two factors explain
+
+    Returns {available: False, ...} if the size series isn't recorded yet or there
+    aren't enough paired observations."""
+    rows: list[tuple[float, float, float]] = []
+    dates: list[date] = []
+    for a, b in zip(series, series[1:]):
+        ma, mb = a.bench.get(market_key), b.bench.get(market_key)
+        sa, sb = a.bench.get(size_key), b.bench.get(size_key)
+        if None in (ma, mb, sa, sb) or not (a.nav and a.nav > 0 and ma > 0 and sa > 0):
+            continue
+        rows.append((b.nav / a.nav - 1.0, mb / ma - 1.0, sb / sa - 1.0))
+        dates.append(b.d)
+
+    if len(rows) < _MIN_FACTOR:
+        return {"available": False, "n": len(rows), "size_key": size_key}
+
+    import numpy as np
+
+    ppy = _periods_per_year(dates)
+    rf_p = rf_annual / ppy if ppy else 0.0
+    rp = np.array([r[0] for r in rows]) - rf_p
+    rm = np.array([r[1] for r in rows]) - rf_p  # market excess
+    smb = np.array([r[2] - r[1] for r in rows])  # small − market (size factor)
+
+    X = np.column_stack([np.ones(len(rows)), rm, smb])
+    coef, *_ = np.linalg.lstsq(X, rp, rcond=None)
+    alpha_p, beta_market, beta_size = (float(c) for c in coef)
+
+    resid = rp - X @ coef
+    ss_res = float((resid ** 2).sum())
+    ss_tot = float(((rp - rp.mean()) ** 2).sum())
+    r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else None
+
+    # Window contributions (compounded factor returns × loading).
+    mkt_win = float(np.prod(1 + rm) - 1)
+    smb_win = float(np.prod(1 + smb) - 1)
+    return {
+        "available": True,
+        "n": len(rows),
+        "meaningful": len(rows) >= MIN_MEANINGFUL,
+        "size_key": size_key,
+        "market_key": market_key,
+        "beta_market": beta_market,
+        "beta_size": beta_size,
+        "alpha_annual": alpha_p * ppy,
+        "r_squared": r2,
+        "market_contribution": beta_market * mkt_win,
+        "size_contribution": beta_size * smb_win,
+        "smb_window": smb_win,
+    }
+
+
 # --- Rendering ---------------------------------------------------------------
 def _pct(v, places: int = 2) -> str:
     return f"{v * 100:+.{places}f}%" if v is not None else "n/a"
@@ -281,7 +352,8 @@ def attribution_report(
     rf_annual: float = 0.0,
 ) -> str:
     keys = list(SETTINGS.benchmarks.keys())
-    series = build_series(nav_history, keys, current=current)
+    factor_keys = list(SETTINGS.factor_proxies.keys())
+    series = build_series(nav_history, keys + factor_keys, current=current)
     m = compute_metrics(series, keys, rf_annual=rf_annual)
 
     if m.get("insufficient"):
@@ -337,6 +409,34 @@ def attribution_report(
             f"Down-capture {_num(b['down_capture'], 0) + '%' if b['down_capture'] is not None else 'n/a'}"
         )
 
+    # Two-factor decomposition (market + size) — separates a small-cap tilt from
+    # genuine selection alpha. Only when a size proxy has been recorded long enough.
+    if keys and factor_keys:
+        fa = factor_attribution(series, keys[0], factor_keys[0], rf_annual=rf_annual)
+        lines.append("")
+        if not fa.get("available"):
+            lines.append(
+                f"Factor decomposition (market + size): not enough paired data yet "
+                f"({fa.get('n', 0)}/{_MIN_FACTOR} obs incl. {factor_keys[0]})."
+            )
+        else:
+            lines.append(f"Factor decomposition — market ({keys[0]}) vs size ({fa['size_key']}) vs selection:")
+            if not fa["meaningful"]:
+                lines.append("  ⚠ INDICATIVE ONLY — too few observations to trust the loadings.")
+            lines.append(
+                f"  Market beta {_num(fa['beta_market'])}  |  "
+                f"Size beta {_num(fa['beta_size'])} ({'tilted SMALL' if fa['beta_size'] > 0.15 else 'tilted LARGE' if fa['beta_size'] < -0.15 else 'size-neutral'})  |  "
+                f"R² {_num(fa['r_squared'])}"
+            )
+            lines.append(
+                f"  Selection alpha (after market AND size removed) {_pct(fa['alpha_annual'])} ann."
+            )
+            lines.append(
+                f"  Window attribution: market {_pct(fa['market_contribution'])} + "
+                f"size-tilt {_pct(fa['size_contribution'])} + selection (residual)."
+            )
+            lines.append("  " + _factor_verdict(fa))
+
     # Plain-English verdict on the primary benchmark.
     primary = keys[0] if keys else None
     pb = m["benchmarks"].get(primary) if primary else None
@@ -344,6 +444,25 @@ def attribution_report(
         lines.append("")
         lines.append(_verdict(pb, m["meaningful"], primary))
     return "\n".join(lines)
+
+
+def _factor_verdict(fa: dict) -> str:
+    bs, alpha = fa["beta_size"], fa["alpha_annual"]
+    tilt = (
+        f"a small-cap tilt (size beta {bs:+.2f}) contributing {_pct(fa['size_contribution'])}"
+        if bs > 0.15
+        else f"a large-cap tilt (size beta {bs:+.2f})"
+        if bs < -0.15
+        else "no meaningful size tilt"
+    )
+    skill = (
+        "and genuine selection alpha on top"
+        if alpha and alpha > 0.01
+        else "with no selection alpha once the tilt is removed"
+        if alpha is not None and abs(alpha) <= 0.01
+        else "and negative selection alpha (the tilt flatters the raw return)"
+    )
+    return f"Read: the book shows {tilt} {skill}."
 
 
 def _verdict(b: dict, meaningful: bool, key: str) -> str:

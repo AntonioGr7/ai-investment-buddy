@@ -55,6 +55,9 @@ def fmt_ticker(td: TickerData) -> str:
     add("offHigh", f"{td.drawdown_pct:+.0f}%" if td.drawdown_pct is not None else None)
     add(">200dma", td.above_200dma)
     add("volx", td.vol_ratio)
+    if td.cap_tier == "small":
+        add("cap", "SMALL")
+        add("ADV", f"${td.avg_dollar_volume/1e6:.1f}M" if td.avg_dollar_volume else None)
     add("mktcap", f"${td.market_cap/1e9:.0f}B" if td.market_cap else None)
     add("PE", f"{td.pe:.0f}" if td.pe else None)
     add("fwdPE", f"{td.forward_pe:.0f}" if td.forward_pe else None)
@@ -110,6 +113,11 @@ splits to find both.
 trend map + the INDUSTRY dispersion + the screened candidates' technicals/valuation hints. Favor \
 dislocations within durable uptrends, judged at the sub-industry grain. Pick where price has diverged \
 from likely value — not the biggest movers.
+3b. SMALL-CAPS (tagged cap=SMALL) are fair game and often the richest hunting ground — thin analyst \
+coverage means mispricings persist longer (the neglected-firm effect), exactly where a differentiated \
+view can be right AND different. But weigh the trade-offs: less reliable data, real blow-up risk, and \
+lower liquidity (see ADV). Pursue small-caps where the dislocation is clear; don't tilt the whole book \
+into illiquid names.
 4. ALWAYS include every current holding in finalists (they must be re-evaluated for hold/trim/sell).
 
 You have MEMORY TOOLS to consult your own history before deciding: search_memory (grep past \
@@ -244,7 +252,11 @@ values (use the other tools per scenario) WITH honest probabilities — the bear
 the structural risks the market is pricing — and get the expected value, the DOWNSIDE to your worst \
 case, and the reward/risk ratio. Your fair_value = this expected value; record bear_value, \
 downside_pct and risk_reward from it. This forces you to value like the market does: weigh outcomes, \
-don't cherry-pick the bull.
+don't cherry-pick the bull. CRITICAL: the bear VALUE must be a genuine adverse scenario, well below \
+today's price — a bear value within a few percent of the current price implies ~zero downside, which \
+is almost never real and produces a meaningless (capped) reward/risk. If your worst case barely dents \
+the price, you have not modelled the downside; lower it to reflect the structural/de-rating risk you \
+yourself flagged.
 Inputs you don't have, ESTIMATE with stated reasoning. Cross-check at least two methods.
 
 Method:
@@ -316,8 +328,13 @@ and calibration over quantity.
 
 A high-flying, expensive, beloved stock should usually be FAIRLY_VALUED/OVERVALUED unless you can \
 defend the price with numbers; a beaten-down name is only a BUY if your own probability-weighted \
-valuation AND a favourable risk/reward — not the size of the drop — say so. Call submit_assessment \
-exactly once."""
+valuation AND a favourable risk/reward — not the size of the drop — say so.
+
+SMALL-CAPS (cap=SMALL): the edge is real (less coverage → more mispricing) but so are the hazards. \
+Demand a WIDER margin of safety, lower your confidence when the fundamentals are sparse or look \
+unreliable (don't manufacture a precise DCF from thin data — say so and defer), weight balance-sheet / \
+dilution / going-concern risk harder in structural_risk, and remember low ADV means a real position \
+takes time to build and exit. Call submit_assessment exactly once."""
 
 ANALYST_TOOL = {
     "name": "submit_assessment",

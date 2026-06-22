@@ -135,6 +135,13 @@ def reverse_dcf(
     }
 
 
+# Reward/risk is meaningless above this — beyond it the ratio is a near-zero-
+# downside artifact, not real asymmetry. A worst case within this % of the current
+# price is flagged as an implausibly benign (under-modelled) bear scenario.
+_RR_CAP = 10.0
+_BENIGN_DOWNSIDE_PCT = 3.0
+
+
 def probability_weighted_value(scenarios: list, current_price: float | None = None) -> dict:
     """Probability-weight bear/base/bull scenario values into one expected value —
     mirroring how the MARKET prices a stock (the consensus of all outcomes, weighted).
@@ -175,7 +182,20 @@ def probability_weighted_value(scenarios: list, current_price: float | None = No
         # Reward/risk: expected upside vs magnitude of downside to the worst case.
         down_mag = abs(min(0.0, downside))
         up_mag = max(0.0, exp_up)
-        out["reward_risk"] = round(up_mag / down_mag, 2) if down_mag > 1e-9 else None
+        # Cap R/R: when the worst case sits ≈ at the current price, down_mag → 0 and
+        # the ratio explodes into a meaningless number (e.g. R/R 98 off a -0.4%
+        # "downside"). Cap it, and flag that the bear scenario is implausibly benign
+        # — that is almost always an under-modelled downside, not a free lunch.
+        out["reward_risk"] = (
+            round(min(up_mag / down_mag, _RR_CAP), 2) if down_mag > 1e-9 else None
+        )
+        if down_mag < _BENIGN_DOWNSIDE_PCT:
+            out["downside_warning"] = (
+                f"Worst-case value is only {downside:+.1f}% from the current price — that "
+                "implies almost no downside, which is rarely realistic. Re-examine the bear "
+                "scenario (moat erosion, multiple compression, growth stall): a genuine "
+                "adverse case usually sits well below today's price. R/R is unreliable here."
+            )
     return out
 
 
@@ -321,10 +341,13 @@ def _summarize(name: str, result: dict) -> str:
     if name == "reverse_dcf":
         return f"reverse_dcf → implied growth {result.get('implied_growth_rate_pct')}%"
     if name == "probability_weighted_value":
-        return (
+        s = (
             f"scenarios → EV ${result.get('expected_value')}/sh, "
             f"downside {result.get('downside_pct')}%, R/R {result.get('reward_risk')}"
         )
+        if result.get("downside_warning"):
+            s += "  ⚠ benign bear case — re-examine downside"
+        return s
     fv = result.get("fair_value_per_share")
     return f"{name} → ${fv}/sh" if fv is not None else f"{name} → ok"
 

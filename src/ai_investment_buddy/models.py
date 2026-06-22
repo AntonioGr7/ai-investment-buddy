@@ -30,8 +30,15 @@ class TickerData(BaseModel):
     name: str | None = None
     sector: str | None = None
     industry: str | None = None
+    # 'large' (S&P 500 / Nasdaq 100) or 'small' (S&P 600). Small-caps are less
+    # covered (more mispricing) but less liquid and data-sparse — handled with
+    # more margin-of-safety demand and realistic slippage downstream.
+    cap_tier: str = "large"
 
     price: float | None = None
+    # Average daily DOLLAR volume (close × volume, ~21d) — the liquidity measure
+    # the executor uses to model realistic market-impact slippage on small-caps.
+    avg_dollar_volume: float | None = None
     prev_close: float | None = None
     change_pct: float | None = None  # 1-day % change
 

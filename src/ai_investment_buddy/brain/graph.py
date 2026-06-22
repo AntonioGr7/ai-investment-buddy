@@ -219,6 +219,16 @@ def _investor_notes_for(ticker: str) -> str:
     return "\n".join(lines)
 
 
+def _clamp_rr(rr) -> float | None:
+    """Cap a reported reward/risk ratio. A value far above ~10 is a near-zero-
+    downside artifact (bear ≈ price), not real asymmetry — see valuation_tools."""
+    try:
+        v = float(rr)
+    except (TypeError, ValueError):
+        return None
+    return round(min(max(v, 0.0), 10.0), 2)
+
+
 def _parse_predictions(raw: list, td: TickerData, as_of: date) -> list:
     """Turn the analyst's prediction payload into Prediction objects. Best-effort:
     a malformed entry is skipped, never raised — a bad forecast must not break a
@@ -308,7 +318,7 @@ def assess_ticker(
             else (round((p["bear_value"] / price - 1) * 100, 1)
                   if p.get("bear_value") and price else None)
         ),
-        risk_reward=p.get("risk_reward"),
+        risk_reward=_clamp_rr(p.get("risk_reward")),
         valuation_verdict=p.get("valuation_verdict", "FAIRLY_VALUED"),
         quality_score=int(p.get("quality_score", 3)),
         margin_of_safety=bool(p.get("margin_of_safety", False)),

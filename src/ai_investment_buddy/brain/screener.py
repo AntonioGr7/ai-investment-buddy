@@ -57,6 +57,9 @@ def compute_metrics(
             if avg_vol and last_vol and avg_vol > 0
             else None
         )
+        # Average daily dollar volume over the last ~21 sessions — the liquidity
+        # gauge for realistic small-cap slippage and the tradeability floor.
+        adv = round(avg_vol * last, 0) if avg_vol and last else None
 
         dma50 = float(closes.iloc[-50:].mean()) if len(closes) >= 50 else None
         dma200 = float(closes.iloc[-200:].mean()) if len(closes) >= 200 else None
@@ -73,7 +76,9 @@ def compute_metrics(
             name=m.get("name") or None,
             sector=m.get("sector") or None,
             industry=m.get("sub_industry") or m.get("industry") or None,
+            cap_tier=m.get("cap_tier") or "large",
             price=round(last, 2),
+            avg_dollar_volume=adv,
             prev_close=round(prev, 2),
             change_pct=round((last / prev - 1) * 100, 2) if prev else None,
             ret_1m=_pct_return(closes, 21),
@@ -130,7 +135,14 @@ def screen(
     if not metrics:
         return always
 
-    ranked = list(metrics.values())
+    # Liquidity floor: keep only names we could realistically trade out of the
+    # screening buckets. Holdings/watchlist bypass this (carried in `always`). A
+    # missing ADV is treated as untradeable (conservative).
+    floor = SETTINGS.min_dollar_volume
+    ranked = [
+        td for td in metrics.values()
+        if td.avg_dollar_volume is not None and td.avg_dollar_volume >= floor
+    ]
     mix = SETTINGS.screener_mix
 
     def n_for(bucket: str) -> int:

@@ -36,6 +36,13 @@ class Settings:
     benchmarks: dict[str, str] = field(
         default_factory=lambda: {"S&P 500": "^GSPC", "Nasdaq 100": "^NDX"}
     )
+    # Factor proxies recorded alongside NAV (NOT beat-benchmarks) so attribution can
+    # separate genuine selection alpha from factor exposure. Russell 2000 is the
+    # standard small-cap (size) proxy — vs the S&P 500 it gives the SMB spread, so
+    # a small-cap tilt isn't mistaken for skill. Already fetched in the macro snapshot.
+    factor_proxies: dict[str, str] = field(
+        default_factory=lambda: {"Russell 2000": "^RUT"}
+    )
 
     # --- Decision engine (LLM-agnostic) ---
     # Which LLM backend powers the decision: "anthropic" | "openai" | "gemini".
@@ -43,6 +50,17 @@ class Settings:
     # (OpenRouter, Together, Groq, local servers, ...).
     llm_provider: str = os.getenv("AIB_LLM_PROVIDER", "anthropic").lower()
     max_decision_tokens: int = 16_000
+    # Low temperature + a fixed seed make valuations reproducible run-to-run, so a
+    # recommendation doesn't flip on sampling noise (the INTU BUY-vs-WATCH case:
+    # identical inputs, but a ~10% wobble in the model-estimated bear value crossed
+    # the BUY threshold). Some reasoning models reject these — the client falls
+    # back to provider defaults if so.
+    decision_temperature: float = float(os.getenv("AIB_TEMPERATURE", "0.2"))
+
+    @property
+    def decision_seed(self) -> int | None:
+        raw = os.getenv("AIB_SEED", "7").strip()
+        return int(raw) if raw else None
 
     @property
     def decision_model(self) -> str:
@@ -134,9 +152,24 @@ class Settings:
     # Drawdown from the NAV peak (fraction) that trips the de-risk circuit-breaker.
     drawdown_circuit_breaker: float = 0.15
 
+    # --- Universe breadth (small-cap sleeve) ---
+    # Skip names below this average daily DOLLAR volume from the screener buckets —
+    # untradeable for us in any realistic size (holdings/watchlist bypass). The
+    # neglected-firm edge lives in thinly-covered names, but not in ones we could
+    # never fill.
+    min_dollar_volume: float = 2_000_000.0
+
     # --- Trading frictions (paper realism) ---
     commission_per_trade: float = 0.0
-    slippage_bps: float = 5.0  # 0.05% applied against you on each fill
+    # Base slippage applied against you on every fill (bid/ask + timing).
+    slippage_bps: float = 5.0  # 0.05%
+    # Market-impact slippage for less-liquid names: extra cost scales with how much
+    # of a day's volume the trade represents (participation = trade_value / ADV).
+    # impact_frac = min(max_slippage_frac, liquidity_impact_coef × participation).
+    # Without this, a micro-cap fills on paper at a price you could never get, and
+    # the whole small-cap experiment becomes fantasy.
+    liquidity_impact_coef: float = 0.10
+    max_slippage_frac: float = 0.05  # cap impact at 5% however illiquid
 
     # --- Data providers (swap implementations without touching callers) ---
     # Bulk price history stays on yfinance (one 500-ticker pull would blow the
