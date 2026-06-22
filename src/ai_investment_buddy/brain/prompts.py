@@ -98,9 +98,18 @@ turnaround reason.
    The durable trend is your CONVICTION; the recent dislocation is your ENTRY. Do not become a \
 momentum-chaser (a name that just keeps rising is rarely mispriced) nor a falling-knife catcher (a \
 cheap price in a secularly-declining group is a trap).
+2b. THEN DRILL INTO THE INDUSTRY DISPERSION MAP — this is where the real signal is. The 11-sector \
+view AVERAGES AWAY what matters: inside one sector, sub-industries routinely move in OPPOSITE \
+directions (e.g. Semiconductors melting up while Application Software is destroyed — both inside \
+'Information Technology', which looks merely flat). NEVER treat a sector as one bet: a 'flat' or even \
+'punished' sector can hide a roaring sub-industry and a collapsing one. Hunt at the sub-industry \
+grain — the punished sub-industry inside an otherwise-healthy sector is the contrarian setup; the \
+lone overheating sub-industry inside a quiet sector is the crowding risk. Use the largest intra-sector \
+splits to find both.
 3. Choose a focused set of FINALISTS (up to {SETTINGS.shortlist_size}) to pursue, grounded in the \
-trend map + the screened candidates' technicals/valuation hints. Favor dislocations within durable \
-uptrends. Pick where price has diverged from likely value — not the biggest movers.
+trend map + the INDUSTRY dispersion + the screened candidates' technicals/valuation hints. Favor \
+dislocations within durable uptrends, judged at the sub-industry grain. Pick where price has diverged \
+from likely value — not the biggest movers.
 4. ALWAYS include every current holding in finalists (they must be re-evaluated for hold/trim/sell).
 
 You have MEMORY TOOLS to consult your own history before deciding: search_memory (grep past \
@@ -176,6 +185,7 @@ def build_strategist_message(
     performance: str = "",
     narrative: str = "",
     sector_scan: str = "",
+    industry_scan: str = "",
     investor_notes: str = "",
 ) -> str:
     parts = [f"=== STRATEGY FOR {as_of.isoformat()} ==="]
@@ -185,6 +195,8 @@ def build_strategist_message(
     parts.append("\n--- " + _fmt_macro(macro))
     if sector_scan:
         parts.append("\n--- " + sector_scan)
+    if industry_scan:
+        parts.append("\n--- " + industry_scan)
     parts.append("\n--- PERFORMANCE VS BENCHMARKS ---")
     parts.append(performance)
     parts.append(f"\n--- CURRENT HOLDINGS (always finalists): {holdings or 'none'}")
@@ -289,6 +301,18 @@ catalyst visible' is a valid answer that should lower conviction.
 10. Weigh the macro regime: rate sensitivity, cyclicality, exposure to current catalysts/risks.
 11. Recommendation (BUY/ADD/HOLD/WATCH/TRIM/SELL/AVOID) + suggested max weight — driven by RISK/REWARD \
 and structural risk, not by upside alone.
+12. FORECAST (this is the edge). The market prices what is KNOWN today near-perfectly; you only add \
+value with a differentiated view of the FUTURE that is both right AND different from consensus. Where \
+— and ONLY where — you genuinely have such a variant view, emit 1-2 explicit, falsifiable predictions \
+in `predictions`. Each must be: (a) objectively checkable — prefer PRICE-ANCHORED so it auto-resolves: \
+resolve_kind 'price_above'/'price_below' with a resolve_price, or 'return_above' with resolve_price as \
+a return fraction (e.g. 0.20); use 'manual' only for genuinely fundamental/event claims; (b) given a \
+honest probability you'd stake reputation on (you ARE scored — Brier — and your past calibration is \
+shown below; if you've been overconfident, pull probabilities toward 50%); (c) given the \
+market_implied probability you're diverging from — your edge is (probability − market_implied), and if \
+that gap is ~0 you have no variant view, so DON'T emit a prediction just to have one; (d) tied to a \
+catalyst and horizon_days. No genuine edge over consensus → emit an empty predictions list. Quality \
+and calibration over quantity.
 
 A high-flying, expensive, beloved stock should usually be FAIRLY_VALUED/OVERVALUED unless you can \
 defend the price with numbers; a beaten-down name is only a BUY if your own probability-weighted \
@@ -374,6 +398,25 @@ ANALYST_TOOL = {
                 "description": "Suggested cap on this name as a fraction of NAV.",
             },
             "confidence": {"type": "integer", "minimum": 1, "maximum": 5},
+            "predictions": {
+                "type": "array",
+                "description": "0-2 explicit, falsifiable forecasts where you hold a genuine variant view vs consensus. Empty if you have no real edge over the market's expectation.",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "statement": {"type": "string", "description": "The falsifiable claim, e.g. 'NVDA closes at or above $200 by the horizon'."},
+                        "probability": {"type": "number", "minimum": 0.0, "maximum": 1.0, "description": "Your honest probability the claim comes true. You are scored on this."},
+                        "market_implied": {"type": "number", "minimum": 0.0, "maximum": 1.0, "description": "The probability the market/consensus implies for this claim. Edge = probability − this."},
+                        "horizon_days": {"type": "integer", "description": "Days until this can be judged."},
+                        "category": {"type": "string", "enum": ["price", "fundamental", "event", "macro"]},
+                        "resolve_kind": {"type": "string", "enum": ["price_above", "price_below", "return_above", "manual"], "description": "How it resolves. Prefer price-anchored kinds so it scores automatically."},
+                        "resolve_price": {"type": "number", "description": "Threshold: a price for price_above/below, or a return fraction (0.20 = +20%) for return_above."},
+                        "rationale": {"type": "string", "description": "Why you differ from consensus — the variant perception."},
+                        "catalyst": {"type": "string", "description": "What forces the outcome, and when."},
+                    },
+                    "required": ["statement", "probability", "horizon_days", "resolve_kind"],
+                },
+            },
         },
         "required": [
             "archetype", "valuation_method", "fair_value", "valuation_verdict",
@@ -395,10 +438,17 @@ def build_analyst_message(
     current_position: dict | None,
     dossier: str = "",
     investor_notes: str = "",
+    calibration: str = "",
 ) -> str:
     parts = [f"=== VALUATION: {td.ticker} ({td.name or '?'}) ==="]
     parts.append(f"\nMARKET REGIME: {regime}")
     parts.append(f"STRATEGIST THESIS: {market_thesis}")
+    if calibration and calibration.strip():
+        parts.append(
+            "\n--- YOUR FORECASTING TRACK RECORD (calibrate your predictions to this; "
+            "if you have been overconfident, pull probabilities toward 50%) ---"
+        )
+        parts.append(calibration.strip())
     if current_position:
         parts.append(
             f"\nWE ALREADY HOLD THIS: {json.dumps(current_position)} "
@@ -463,6 +513,15 @@ respectable decision — do not deploy it just because it is there.
 - Size by RISK/REWARD first (favourable asymmetry), then conviction × margin of safety and fit with \
 the regime and existing book. Prefer a strong name with good risk/reward over a deeply-fallen one \
 with big 'upside' but large downside. Scaling in gradually is fine.
+
+- RESPECT BOOK-LEVEL RISK. The per-name cap is blind to the real danger of a long book: many names \
+that are secretly ONE bet. Read the BOOK RISK section. If it flags sector concentration, high \
+effective NAV beta (you're leveraged-long — outperformance is just market direction, not skill), a \
+low diversification ratio, or a correlated cluster, then treat those names as a single position when \
+sizing, and do NOT add risk that worsens a flagged limit — diversify the source of risk or hold cash \
+instead. If the DRAWDOWN circuit-breaker is tripped, raise the bar to add and prefer trimming the \
+highest-beta / highest-risk-contribution names. A name's share of BOOK variance matters more than its \
+weight — the biggest risk contributor is where you are most exposed.
 
 Hard guardrails (execution enforces them too):
 - No single position above {SETTINGS.max_position_weight:.0%} of NAV. No leverage, no shorting. \
@@ -542,12 +601,25 @@ def build_pm_message(
     narrative: str = "",
     investor_notes: str = "",
     recent_activity: str = "",
+    risk_summary: str = "",
+    calibration: str = "",
 ) -> str:
     parts = [f"=== ALLOCATION FOR {as_of.isoformat()} ==="]
     parts.append(f"\nMARKET REGIME: {regime}")
     parts.append(f"STRATEGIST THESIS: {market_thesis}")
     if recent_activity:
         parts.append(f"\n--- YOUR RECENT ACTIVITY --- \n{recent_activity}")
+    if risk_summary:
+        parts.append(
+            "\n--- BOOK RISK (whole-portfolio; soft guardrails) ---\n"
+            + risk_summary
+        )
+    if calibration and calibration.strip():
+        parts.append(
+            "\n--- FORECASTING TRACK RECORD (how reliable the agent's predictions "
+            "have proven; weight convictions accordingly — discount overconfident calls) ---\n"
+            + calibration.strip()
+        )
     parts.append(_fmt_narrative(narrative))
     parts.append(_fmt_investor_notes(investor_notes))
 

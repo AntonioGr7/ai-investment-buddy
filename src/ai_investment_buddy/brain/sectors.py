@@ -18,7 +18,7 @@ import math
 from statistics import median
 
 from ..config import SETTINGS
-from ..models import SectorStat, TickerData
+from ..models import IndustryStat, SectorStat, TickerData
 
 # The SPDR sector ETFs — one per GICS sector. Their returns give the
 # market-cap-weighted, top-down sector read (what the Finviz sector map shows),
@@ -184,6 +184,105 @@ def scan_sectors(
 def punished_sectors(stats: list[SectorStat]) -> list[str]:
     """The most beaten-down sectors — where the screener should go hunting."""
     return [s.sector for s in stats[: SETTINGS.punished_sector_count]]
+
+
+# --- Industry (sub-industry) grain -------------------------------------------
+def scan_industries(metrics: dict[str, TickerData]) -> list[IndustryStat]:
+    """Aggregate per-GICS-sub-industry health from our constituents, worst-3m first.
+
+    This is the grain the sector scan averages away: it separates 'Semiconductors'
+    from 'Application Software' inside Information Technology, so a semis melt-up and
+    a SaaS collapse stop cancelling out. Equal-weighted medians; thin groups
+    (< ``industry_min_names``) are dropped as too noisy to read."""
+    buckets: dict[str, list[TickerData]] = {}
+    parent: dict[str, str] = {}
+    for td in metrics.values():
+        ind = (td.industry or "").strip()
+        if not ind:
+            continue
+        buckets.setdefault(ind, []).append(td)
+        if ind not in parent and td.sector:
+            parent[ind] = td.sector.strip()
+
+    stats: list[IndustryStat] = []
+    for ind, names in buckets.items():
+        if len(names) < SETTINGS.industry_min_names:
+            continue
+        above = [n.above_200dma for n in names if n.above_200dma is not None]
+        breadth = round(100 * sum(1 for x in above if x) / len(above), 0) if above else None
+        med_3m = _median([n.ret_3m for n in names])
+        med_6m = _median([n.ret_6m for n in names])
+        med_12m = _median([n.ret_12m for n in names])
+        stats.append(
+            IndustryStat(
+                industry=ind,
+                sector=parent.get(ind, ""),
+                n=len(names),
+                ret_1m=_median([n.ret_1m for n in names]),
+                ret_3m=med_3m,
+                ret_6m=med_6m,
+                ret_12m=med_12m,
+                breadth_200dma=breadth,
+                median_drawdown=_median([n.drawdown_pct for n in names]),
+                trend=_trend_label(med_3m, med_6m, med_12m),
+            )
+        )
+    stats.sort(key=lambda s: s.ret_3m if s.ret_3m is not None else 0.0)
+    return stats
+
+
+def punished_industries(stats: list[IndustryStat]) -> list[str]:
+    """The most beaten-down sub-industries — finer contrarian hunting ground than
+    whole sectors (e.g. 'Application Software', not all of 'Information Technology')."""
+    return [s.industry for s in stats[: SETTINGS.punished_industry_count]]
+
+
+def _dispersion_by_sector(stats: list[IndustryStat]) -> list[tuple[str, float, IndustryStat, IndustryStat]]:
+    """For each sector, the spread between its best and worst sub-industry on 3m —
+    where dispersion is largest, the sector-level read is most misleading."""
+    by_sector: dict[str, list[IndustryStat]] = {}
+    for s in stats:
+        if s.ret_3m is not None and s.sector:
+            by_sector.setdefault(s.sector, []).append(s)
+    out = []
+    for sec, items in by_sector.items():
+        if len(items) < 2:
+            continue
+        hi = max(items, key=lambda s: s.ret_3m)
+        lo = min(items, key=lambda s: s.ret_3m)
+        out.append((sec, hi.ret_3m - lo.ret_3m, hi, lo))
+    out.sort(key=lambda x: x[1], reverse=True)
+    return out
+
+
+def format_industry_scan(stats: list[IndustryStat], top: int = 8) -> str:
+    """Render the industry grain for the strategist: the biggest intra-sector
+    dispersions (the semis-vs-SaaS splits), plus the hottest and most-punished
+    sub-industries across the market."""
+    if not stats:
+        return ""
+    lines = [
+        "INDUSTRY DISPERSION MAP (GICS sub-industry, equal-weighted medians — what "
+        "the 11-sector view hides). Within a single sector, groups can move in "
+        "opposite directions; that dispersion is where mispricing concentrates:"
+    ]
+    disp = _dispersion_by_sector(stats)
+    if disp:
+        lines.append("  Largest intra-sector splits (best vs worst sub-industry, 3m):")
+        for sec, spread, hi, lo in disp[:5]:
+            lines.append(
+                f"    - {sec}: spread {spread:.0f}pts | "
+                f"HOT {hi.industry} {hi.ret_3m:+.0f}% [{hi.trend}] vs "
+                f"WEAK {lo.industry} {lo.ret_3m:+.0f}% [{lo.trend}]"
+            )
+    hottest = sorted(stats, key=lambda s: s.ret_3m if s.ret_3m is not None else -1e9, reverse=True)[:top]
+    lines.append("  Hottest sub-industries (3m) — crowded/momentum, watch for froth:")
+    for s in hottest:
+        lines.append("    + " + s.one_line())
+    lines.append("  Most punished sub-industries (3m) — contrarian hunting ground:")
+    for s in stats[:top]:
+        lines.append("    - " + s.one_line())
+    return "\n".join(lines)
 
 
 def format_sector_scan(stats: list[SectorStat]) -> str:

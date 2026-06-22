@@ -6,7 +6,6 @@
   aib report    show the latest journal entry / decision rationale
   aib history   show NAV history vs benchmarks
 """
-
 from __future__ import annotations
 
 import sys
@@ -22,6 +21,7 @@ from pathlib import Path
 
 from .config import SETTINGS
 from .engine import commit, run_daily
+from .engine.attribution import SeriesPoint, attribution_report
 from .engine.benchmark import performance_summary
 from .memory import Journal, snapshot, store
 
@@ -324,6 +324,178 @@ def history():
     for r in rows:
         table.add_row(*[str(r.get(c, "")) for c in cols])
     console.print(table)
+
+
+@app.command()
+def attribution(
+    rf: float = typer.Option(
+        0.0, "--rf", help="Annual risk-free rate as a fraction (e.g. 0.04) for Sharpe/alpha."
+    ),
+):
+    """Risk-adjusted performance & return attribution — is it skill or just beta?
+
+    Decomposes the portfolio's return into a market-beta part and a selection
+    (alpha) part vs each benchmark, and reports Sharpe/Sortino/max-drawdown,
+    tracking error, information ratio, and up/down capture. Includes today's live
+    NAV as the latest point. Numbers are flagged INDICATIVE until enough runs."""
+    if not store.is_initialized():
+        console.print("[red]No portfolio yet.[/red] Run [bold]aib init[/bold] first.")
+        raise typer.Exit(1)
+
+    nav_history = store.load_nav_history()
+    pf = store.load_portfolio()
+    prices = _latest_prices_for(pf)
+    nav = pf.nav(prices)
+    current = SeriesPoint(
+        d=date_cls.today(), nav=nav, bench=_current_benchmark_levels()
+    )
+    console.print(
+        Panel(
+            attribution_report(nav_history, current=current, rf_annual=rf),
+            title=f"Attribution — NAV ${nav:,.0f}",
+        )
+    )
+
+
+@app.command()
+def risk():
+    """Portfolio-level (book) risk — concentration, market exposure, and clusters.
+
+    Per-name caps don't see the risk that sinks concentrated long books: many
+    names that are really one bet. This reads the whole book from price history
+    and reports book volatility, effective market exposure (NAV beta), effective
+    number of names, the diversification ratio, sector exposure, the most-
+    correlated pairs, each holding's share of book risk, and any soft-guardrail
+    breaches (sector / beta / correlation / drawdown)."""
+    if not store.is_initialized():
+        console.print("[red]No portfolio yet.[/red] Run [bold]aib init[/bold] first.")
+        raise typer.Exit(1)
+
+    from .data import get_providers
+    from .engine.risk import build_risk_report, format_risk
+
+    pf = store.load_portfolio()
+    prices = _latest_prices_for(pf)
+    nav = pf.nav(prices)
+    weights = {
+        t: pos.market_value(prices.get(t, 0.0)) / nav
+        for t, pos in pf.positions.items()
+        if nav and prices.get(t)
+    }
+    bench_label, bench_sym = next(iter(SETTINGS.benchmarks.items()))
+    hist, bench_hist = {}, None
+    if weights:
+        providers = get_providers()
+        console.print("[dim]Fetching price history for the book + benchmark…[/dim]")
+        hist = providers.prices.history(list(weights), lookback_days=SETTINGS.risk_lookback_days)
+        bench_hist = providers.prices.history(
+            [bench_sym], lookback_days=SETTINGS.risk_lookback_days
+        ).get(bench_sym)
+
+    navs = [float(r["nav"]) for r in store.load_nav_history() if r.get("nav")] + [nav]
+    report = build_risk_report(
+        weights, pf.cash / nav if nav else 1.0, nav, hist, bench_hist,
+        bench_label, sectors=_holding_sectors(list(weights)), nav_navs=navs,
+    )
+    console.print(Panel(format_risk(report), title=f"Book risk — NAV ${nav:,.0f}"))
+
+
+@app.command()
+def predictions(
+    show_all: bool = typer.Option(False, "--all", help="Include resolved predictions, not just open ones."),
+    ticker: str = typer.Option(None, "--ticker", help="Filter to one ticker (or MKT for macro)."),
+):
+    """List the agent's explicit forecasts — what it expects, by when, and its edge.
+
+    Each prediction is a falsifiable claim with our probability, the market-implied
+    baseline, and the edge (our prob − consensus). Open ones await their horizon;
+    resolved ones are scored. This is the foresight the calibration scorecard grades."""
+    from .memory import predictions as P
+
+    preds = P.load_all()
+    if not show_all:
+        preds = [p for p in preds if p.status == "open"]
+    if ticker:
+        tk = ticker.strip().upper()
+        preds = [p for p in preds if (p.ticker or "MKT") == tk]
+    if not preds:
+        console.print("[yellow]No predictions yet. They are generated on `aib run`.[/yellow]")
+        raise typer.Exit(0)
+
+    preds.sort(key=lambda p: (p.status != "open", p.horizon_date))
+    table = Table(title="Predictions")
+    for c in ("Ticker", "Horizon", "Claim", "P(us)", "P(mkt)", "Edge", "Status", "Result"):
+        table.add_column(c, justify="left" if c == "Claim" else "right")
+    for p in preds:
+        edge = f"{p.edge:+.0%}" if p.edge is not None else "—"
+        res = "" if p.status == "open" else ("[green]HIT[/green]" if p.outcome else "[red]MISS[/red]")
+        claim = (p.statement[:60] + "…") if len(p.statement) > 61 else p.statement
+        table.add_row(
+            p.ticker or "MKT", p.horizon_date.isoformat(), claim,
+            f"{p.probability:.0%}",
+            f"{p.market_implied:.0%}" if p.market_implied is not None else "—",
+            edge, p.status, res,
+        )
+    console.print(table)
+
+
+@app.command()
+def calibration():
+    """Calibration scorecard — is the agent's foresight real, or just good stories?
+
+    Brier score, skill vs the base rate, hit rate, overconfidence, the calibration
+    curve, and the variant-perception test (do high-edge calls actually pay off)."""
+    from .memory import predictions as P
+
+    cal = P.compute_calibration()
+    console.print(Panel(P.format_calibration(cal), title="Calibration scorecard"))
+
+
+@app.command()
+def resolve(
+    pred_id: str = typer.Argument(None, help="Prediction id to resolve manually. Omit to auto-resolve all DUE price-anchored ones."),
+    hit: bool = typer.Option(None, "--hit/--miss", help="For manual resolution: did the claim happen?"),
+    note: str = typer.Option("", "--note", help="Resolution note."),
+):
+    """Resolve predictions whose horizon has arrived.
+
+    With no id: fetches current prices and mechanically resolves every DUE
+    price-anchored prediction. With an id + --hit/--miss: resolves one by judgement
+    (for fundamental/event/macro calls that can't be auto-scored)."""
+    if not store.is_initialized():
+        console.print("[red]No state yet.[/red] Run [bold]aib init[/bold] first.")
+        raise typer.Exit(1)
+    from .memory import predictions as P
+
+    today = date_cls.today()
+    if pred_id:
+        if hit is None:
+            console.print("[red]Pass --hit or --miss to resolve a specific prediction.[/red]")
+            raise typer.Exit(1)
+        ok = P.resolve_manual(pred_id, hit, today, note)
+        console.print(
+            f"[green]Resolved {pred_id}: {'HIT' if hit else 'MISS'}.[/green]" if ok
+            else f"[yellow]No open prediction with id {pred_id}.[/yellow]"
+        )
+        raise typer.Exit(0)
+
+    due = P.due_predictions(today)
+    price_kinds = {"price_above", "price_below", "return_above"}
+    tickers = sorted({p.ticker for p in due if p.resolve_kind in price_kinds and p.ticker})
+    if not tickers:
+        console.print(f"[yellow]No due price-anchored predictions to resolve ({len(due)} due, judged manually).[/yellow]")
+        raise typer.Exit(0)
+    from .data import get_providers
+
+    providers = get_providers()
+    console.print(f"[dim]Resolving {len(tickers)} due ticker(s)…[/dim]")
+    prices = {t: providers.prices.latest_price(t) for t in tickers}
+    changed = P.resolve_mechanical(today, {t: px for t, px in prices.items() if px})
+    if not changed:
+        console.print("[yellow]Nothing resolved (prices unavailable?).[/yellow]")
+    else:
+        for p in changed:
+            console.print(f"  {p.ticker}: {'[green]HIT[/green]' if p.outcome else '[red]MISS[/red]'} — {p.resolution_note}")
 
 
 @app.command()
@@ -908,6 +1080,20 @@ def feedback():
 
 
 # --- Rendering helpers -------------------------------------------------------
+def _holding_sectors(tickers: list[str]) -> dict[str, str]:
+    """GICS sector per ticker from stored valuations (Unknown if never valued)."""
+    from .memory import valuations
+
+    want = set(tickers)
+    out: dict[str, str] = {}
+    for rec in valuations.load_all():
+        if rec.ticker in want:
+            sec = rec.latest.assessment.sector
+            if sec:
+                out[rec.ticker] = sec
+    return out
+
+
 def _current_benchmark_levels() -> dict[str, float]:
     from .data import get_providers
 

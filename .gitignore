@@ -219,4 +219,4 @@ __marimo__/
 
 # AI Investment Buddy runtime state (portfolio, trades, journal, cache)
 /data/
-/data_*
+/runs/

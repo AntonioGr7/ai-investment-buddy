@@ -110,6 +110,86 @@ def _recent_activity(as_of: date) -> str:
     )
 
 
+def _book_risk_summary(state, history, providers, metrics, nav_history, progress) -> str:
+    """Compute the whole-book risk read for the PM. Best-effort: any failure just
+    yields an empty summary (the PM still has per-name discipline)."""
+    weights = {p["ticker"]: p["weight"] for p in state.get("positions", [])}
+    if not weights:
+        return ""
+    try:
+        from .risk import build_risk_report, format_risk
+
+        bench_label, bench_sym = next(iter(SETTINGS.benchmarks.items()))
+        try:
+            bench_hist = providers.prices.history(
+                [bench_sym], lookback_days=SETTINGS.risk_lookback_days
+            ).get(bench_sym)
+        except Exception:
+            bench_hist = None
+        # Sector per holding: prefer the fresh screener read, fall back to stored valuations.
+        sectors = {t: s for t in weights if (s := getattr(metrics.get(t), "sector", None))}
+        if len(sectors) < len(weights):
+            from ..memory import valuations
+
+            for rec in valuations.load_all():
+                if rec.ticker in weights and rec.ticker not in sectors and rec.latest.assessment.sector:
+                    sectors[rec.ticker] = rec.latest.assessment.sector
+        navs = [float(r["nav"]) for r in nav_history if r.get("nav")] + [state["nav"]]
+        report = build_risk_report(
+            weights, state.get("cash_weight", 0.0), state["nav"], history,
+            bench_hist, bench_label, sectors=sectors, nav_navs=navs,
+        )
+        n = len(report.flags)
+        progress(f"Computed book-level risk{f' — {n} flag(s)' if n else ' — no limits breached'}.")
+        return format_risk(report, detailed=True)
+    except Exception as e:
+        progress(f"(book risk skipped: {e})")
+        return ""
+
+
+def _resolve_and_calibrate(providers, prices, as_of, progress) -> str:
+    """Resolve due price-anchored predictions and return the calibration scorecard
+    (compact) for prompt injection. Best-effort: any failure yields an empty string."""
+    try:
+        from ..memory import predictions as P
+
+        due = P.due_predictions(as_of)
+        price_kinds = {"price_above", "price_below", "return_above"}
+        tickers = {p.ticker for p in due if p.resolve_kind in price_kinds and p.ticker}
+        price_at: dict[str, float] = {}
+        for t in tickers:
+            px = prices.get(t)
+            if not _valid_px(px):
+                px = providers.prices.latest_price(t)
+            if _valid_px(px):
+                price_at[t] = px
+        resolved = P.resolve_mechanical(as_of, price_at)
+        if resolved:
+            progress(f"Resolved {len(resolved)} due prediction(s) against real prices.")
+        cal = P.compute_calibration()
+        if cal.n_resolved == 0 and cal.n_open == 0:
+            return ""
+        return P.format_calibration(cal, detailed=False)
+    except Exception as e:
+        progress(f"(calibration skipped: {e})")
+        return ""
+
+
+def _persist_predictions(brain, progress) -> None:
+    """Log the brain's fresh forecasts to the prediction ledger (idempotent)."""
+    try:
+        from ..memory import predictions as P
+
+        preds = []
+        for a in getattr(brain, "assessments", []) or []:
+            preds.extend(getattr(a, "predictions", []) or [])
+        fresh = P.add_many(preds)
+        if fresh:
+            progress(f"Logged {len(fresh)} new prediction(s) to the forecast ledger.")
+    except Exception as e:
+        progress(f"(prediction logging skipped: {e})")
+
+
 def _ensure_prices(providers, prices: dict[str, float], tickers: list[str]) -> None:
     for t in tickers:
         cur = prices.get(t)
@@ -197,10 +277,19 @@ def run_daily(
     if punished:
         progress(f"Sector scan: most punished → {', '.join(punished)}.")
 
+    # Finer grain: GICS sub-industry dispersion (semis vs SaaS within Tech, etc.) —
+    # the level where mispricing concentrates and the sector view averages away.
+    industry_stats = sectors.scan_industries(metrics)
+    punished_industries = sectors.punished_industries(industry_stats)
+    industry_scan = sectors.format_industry_scan(industry_stats)
+    if punished_industries:
+        progress(f"Industry scan: most punished → {', '.join(punished_industries[:4])}.")
+
     holdings = list(portfolio.positions.keys())
     shortlist_tickers = screener.screen(
         metrics, holdings, SETTINGS.shortlist_size,
         watchlist=watchlist, punished=punished,
+        punished_industries=punished_industries,
     )
     progress(
         f"Screened to {len(shortlist_tickers)} candidates "
@@ -233,6 +322,18 @@ def run_daily(
     theses = journal.load_theses()
     state = _portfolio_state(portfolio, prices)
 
+    # Book-level risk (concentration, market exposure, correlated clusters) so the
+    # PM allocates with whole-portfolio risk in view, not just per-name caps. Reuses
+    # the price `history` already in hand; only the benchmark series is extra.
+    risk_summary = _book_risk_summary(
+        state, history, providers, metrics, nav_history, progress
+    )
+
+    # Foresight loop: resolve any predictions whose horizon has passed (objective
+    # scoring against real prices), then hand the agent its own calibration so it
+    # forecasts with discipline this run (and discounts overconfident convictions).
+    calibration_summary = _resolve_and_calibrate(providers, prices, as_of, progress)
+
     progress("Running the 3-stage brain (strategist → analyst → PM)…")
     engine = DecisionEngine()
     brain = engine.decide(
@@ -241,6 +342,7 @@ def run_daily(
         macro=macro,
         shortlist=shortlist,
         sector_scan=sector_scan,
+        industry_scan=industry_scan,
         recent_journal=recent,
         theses=theses,
         performance=perf,
@@ -250,6 +352,8 @@ def run_daily(
         narrative=narrative,
         investor_notes=investor_notes,
         recent_activity=_recent_activity(as_of),
+        risk_summary=risk_summary,
+        calibration_summary=calibration_summary,
         force_revaluation=force_revaluation,
         news_fetcher=providers.news.headlines,
         toolkit=toolkit,
@@ -376,6 +480,9 @@ def commit(dry: RunResult, on_progress=None) -> RunResult:
     journal.record_day(dry.decision, dry.strategy, dry.assessments)
     journal.update_theses(dry.decision)
     # Valuations + reasoning were already recorded during the dry analysis pass.
+    # Log the agent's fresh forecasts to the prediction ledger (committed runs only,
+    # so discarded previews don't create trackable obligations).
+    _persist_predictions(dry, progress)
 
     progress("Consolidating long-horizon memory narrative…")
     try:

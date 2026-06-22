@@ -39,6 +39,7 @@ class TickerData(BaseModel):
     ret_1m: float | None = None
     ret_3m: float | None = None
     ret_6m: float | None = None
+    ret_12m: float | None = None  # trailing 12-month return (for the durable-trend read)
     above_50dma: bool | None = None
     above_200dma: bool | None = None
     vol_ratio: float | None = None  # today's volume / avg volume
@@ -130,6 +131,43 @@ class SectorStat(BaseModel):
             out += f" | breadth>200dma {self.breadth_200dma:.0f}%"
         if self.median_drawdown is not None:
             out += f" | median drawdown {self.median_drawdown:+.0f}%"
+        return out
+
+
+class IndustryStat(BaseModel):
+    """Aggregate health of one GICS *sub-industry* (e.g. 'Semiconductors',
+    'Application Software'), computed from our constituents.
+
+    This is the grain the 11-sector view averages away: within Information
+    Technology, semis can rip while software is destroyed. Equal-weighted medians
+    across constituents (we have no per-industry ETF), which actually surfaces
+    breadth/dispersion better than a cap-weighted blob."""
+
+    industry: str
+    sector: str = ""  # the parent GICS sector
+    n: int = 0
+    ret_1m: float | None = None
+    ret_3m: float | None = None
+    ret_6m: float | None = None
+    ret_12m: float | None = None
+    breadth_200dma: float | None = None  # % of names above their 200dma
+    median_drawdown: float | None = None  # median % off the trailing high
+    trend: str = ""  # durable-up / dip-in-uptrend / durable-down / recovering / choppy
+
+    def one_line(self) -> str:
+        def p(v):
+            return f"{v:+.0f}%" if v is not None else "?"
+
+        out = (
+            f"{self.industry} (n={self.n}): 3m {p(self.ret_3m)}, "
+            f"6m {p(self.ret_6m)}, 12m {p(self.ret_12m)}"
+        )
+        if self.breadth_200dma is not None:
+            out += f" | breadth>200dma {self.breadth_200dma:.0f}%"
+        if self.median_drawdown is not None:
+            out += f" | med drawdown {self.median_drawdown:+.0f}%"
+        if self.trend:
+            out += f" [{self.trend}]"
         return out
 
 
@@ -261,6 +299,10 @@ class ValuationAssessment(BaseModel):
     # assessment reused because nothing material changed) rather than a fresh
     # model call. Not meaningful once persisted.
     from_cache: bool = False
+    # Transient: explicit forecasts this valuation produced (the variant view of
+    # the future). Excluded from serialization — they live in their own ledger
+    # (memory/predictions.py); this just carries them out of the brain.
+    predictions: list["Prediction"] = Field(default_factory=list, exclude=True)
 
     def one_line(self) -> str:
         fv = f"${self.fair_value:.0f}" if self.fair_value else "?"
@@ -290,6 +332,53 @@ class StoredValuation(BaseModel):
     news_seen: list[str] = Field(default_factory=list)
 
 
+class Prediction(BaseModel):
+    """A single explicit, falsifiable, time-stamped forecast.
+
+    The edge thesis: the market prices what is *known* today near-perfectly. Alpha
+    comes only from a differentiated view of the *future* that is both right AND
+    different from consensus (variant perception). A Prediction makes that view
+    explicit and SCORABLE: what will happen, by when, how likely we think it is,
+    what the market implies (so the edge = our prob − implied), and an objective
+    criterion to resolve it. Resolved predictions feed the calibration scorecard —
+    the empirical test of whether the agent actually has foresight or just stories."""
+
+    id: str
+    created: date
+    ticker: str = ""  # "" for a macro/market-wide call
+    statement: str  # the falsifiable claim, e.g. "NVDA closes ≥ $X by 2026-09-30"
+    horizon_date: date  # when it can be judged
+    horizon_label: str = ""  # short (<3m) | medium (3-12m) | long (>12m)
+    probability: float = Field(ge=0.0, le=1.0)  # our estimated probability
+    # The crowd's implied probability for the same claim — the baseline we diverge
+    # from. The whole edge is (probability − market_implied); if it's ~0 we have no
+    # variant view and should not bet on it.
+    market_implied: float | None = Field(default=None, ge=0.0, le=1.0)
+    rationale: str = ""  # WHY we differ from consensus — the variant perception
+    catalyst: str = ""  # what forces the re-rating, and when
+    category: str = "price"  # price | fundamental | event | macro
+
+    # Objective resolution. price_above/below auto-resolve from the actual price at
+    # the horizon; return_above measures realized return vs a reference price;
+    # manual is judged later (by the agent against the news, or by the human).
+    resolve_kind: str = "manual"  # price_above | price_below | return_above | manual
+    resolve_price: float | None = None  # threshold (price) or return fraction
+    resolve_reference_price: float | None = None  # entry price for return_above
+
+    # Resolution state.
+    status: str = "open"  # open | resolved
+    outcome: bool | None = None  # True = the claim happened
+    resolved_on: date | None = None
+    resolution_note: str = ""
+    brier: float | None = None  # (probability − outcome)^2 once resolved
+
+    @property
+    def edge(self) -> float | None:
+        if self.market_implied is None:
+            return None
+        return self.probability - self.market_implied
+
+
 class InvestorNote(BaseModel):
     """A durable note from the human investor about a name, captured in dialogue.
 
@@ -316,3 +405,8 @@ class ValuationRecord(BaseModel):
     latest: StoredValuation
     history: list[StoredValuation] = Field(default_factory=list)
     notes: list[InvestorNote] = Field(default_factory=list)
+
+
+# Resolve the forward reference to Prediction on ValuationAssessment (Prediction
+# is declared after it).
+ValuationAssessment.model_rebuild()

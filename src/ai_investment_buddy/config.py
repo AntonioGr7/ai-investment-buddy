@@ -83,6 +83,12 @@ class Settings:
     # How many of the worst-performing sectors count as "punished" (the sector
     # bucket fishes inside these).
     punished_sector_count: int = 4
+    # Finer grain: the screener also fishes inside the most beaten-down GICS
+    # sub-industries (e.g. 'Application Software'), not just whole sectors — the
+    # 11-sector view averages away the semis-vs-SaaS dispersion that matters.
+    punished_industry_count: int = 6
+    # Sub-industries with fewer than this many constituents are too thin to read.
+    industry_min_names: int = 4
 
     # Max tool-use rounds for the analyst's agentic valuation loop (it calls the
     # DCF / reverse-DCF / exit-multiple calculators, then submits). Caps cost.
@@ -109,6 +115,24 @@ class Settings:
     # A new position must clear this conviction bar (1-5) — opening a position is a
     # high-bar act, not a default. Stated to the PM; it decides with judgement.
     min_conviction_to_open: int = 4
+
+    # --- Portfolio-level (book) risk (soft guardrails; PM is asked to respect) ---
+    # Per-name caps are blind to the risk that sinks concentrated long books:
+    # many names that are really one bet. These look at the whole book at once.
+    # Lookback (calendar days) for the holdings' return covariance / beta.
+    risk_lookback_days: int = 180
+    # Most weight allowed in one GICS sector before we flag over-concentration.
+    max_sector_weight: float = 0.40
+    # Effective NAV beta to the primary benchmark above which we flag the book as
+    # leveraged-long (outperformance becomes market direction, not selection).
+    max_portfolio_beta: float = 1.30
+    # Diversification ratio (weighted-avg standalone vol / book vol) below which
+    # the holdings move together enough that we hold fewer real bets than names.
+    min_diversification_ratio: float = 1.25
+    # Pairwise return correlation at/above which two names are flagged as one bet.
+    high_pair_correlation: float = 0.80
+    # Drawdown from the NAV peak (fraction) that trips the de-risk circuit-breaker.
+    drawdown_circuit_breaker: float = 0.15
 
     # --- Trading frictions (paper realism) ---
     commission_per_trade: float = 0.0

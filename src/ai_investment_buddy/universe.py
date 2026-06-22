@@ -44,6 +44,10 @@ def _fetch_sp500() -> list[dict]:
                 "ticker": _normalize(str(row["Symbol"])),
                 "name": str(row.get("Security", "")),
                 "sector": str(row.get("GICS Sector", "")),
+                # GICS Sub-Industry is the granular grouping (e.g. 'Semiconductors'
+                # vs 'Application Software') — the level where the dispersion that
+                # matters lives. The 11-sector view averages it all away.
+                "sub_industry": str(row.get("GICS Sub-Industry", "")),
                 "indices": ["S&P 500"],
             }
         )
@@ -73,6 +77,7 @@ def _build() -> dict:
                 "ticker": t,
                 "name": "",
                 "sector": "",
+                "sub_industry": "",
                 "indices": ["Nasdaq 100"],
             }
     return {

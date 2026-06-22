@@ -44,6 +44,7 @@ class BrainState(TypedDict, total=False):
     market_news: list[dict]
     shortlist: list[TickerData]
     sector_scan: str
+    industry_scan: str
     holdings: list[str]
     watchlist: list[str]
     portfolio_state: dict
@@ -53,6 +54,8 @@ class BrainState(TypedDict, total=False):
     narrative: str
     investor_notes: str
     recent_activity: str
+    risk_summary: str
+    calibration_summary: str
     force_revaluation: bool
     news_fetcher: Any  # optional callable(ticker, limit) -> list[str]; news pulled post-selection
     toolkit: MemoryToolkit
@@ -84,6 +87,7 @@ def _make_node_runner(client: LLMClient):
             performance=state["performance"],
             narrative=state.get("narrative", ""),
             sector_scan=state.get("sector_scan", ""),
+            industry_scan=state.get("industry_scan", ""),
             investor_notes=state.get("investor_notes", ""),
         )
         executor = make_memory_executor(
@@ -153,6 +157,8 @@ def _make_node_runner(client: LLMClient):
                 client, td, view.regime, view.market_thesis,
                 positions.get(ticker), dossier, _investor_notes_for(ticker),
                 on_tool=lambda name, summary, t=ticker: _emit(state, f"  ↳ {t}: {summary}"),
+                as_of=as_of,
+                calibration=state.get("calibration_summary", ""),
             )
 
         _emit(state, f"Analyst: valuing {len(view.finalists)} finalists…")
@@ -184,6 +190,8 @@ def _make_node_runner(client: LLMClient):
             narrative=state.get("narrative", ""),
             investor_notes=state.get("investor_notes", ""),
             recent_activity=state.get("recent_activity", ""),
+            risk_summary=state.get("risk_summary", ""),
+            calibration=state.get("calibration_summary", ""),
         )
         executor = make_memory_executor(
             state["toolkit"],
@@ -211,6 +219,49 @@ def _investor_notes_for(ticker: str) -> str:
     return "\n".join(lines)
 
 
+def _parse_predictions(raw: list, td: TickerData, as_of: date) -> list:
+    """Turn the analyst's prediction payload into Prediction objects. Best-effort:
+    a malformed entry is skipped, never raised — a bad forecast must not break a
+    valuation. Price-anchored kinds get a reference price for resolution."""
+    from datetime import timedelta
+
+    from ..memory.predictions import make_id
+    from ..models import Prediction
+
+    out = []
+    for item in raw or []:
+        try:
+            statement = str(item["statement"]).strip()
+            prob = max(0.0, min(1.0, float(item["probability"])))
+            days = int(item.get("horizon_days", 90))
+            horizon = as_of + timedelta(days=max(1, days))
+            kind = str(item.get("resolve_kind", "manual"))
+            ref = td.price if kind == "return_above" else None
+            label = "short" if days <= 90 else "medium" if days <= 365 else "long"
+            mi = item.get("market_implied")
+            out.append(
+                Prediction(
+                    id=make_id(td.ticker, as_of, statement),
+                    created=as_of,
+                    ticker=td.ticker,
+                    statement=statement,
+                    horizon_date=horizon,
+                    horizon_label=label,
+                    probability=prob,
+                    market_implied=(max(0.0, min(1.0, float(mi))) if mi is not None else None),
+                    rationale=str(item.get("rationale", "")),
+                    catalyst=str(item.get("catalyst", "")),
+                    category=str(item.get("category", "price")),
+                    resolve_kind=kind,
+                    resolve_price=(float(item["resolve_price"]) if item.get("resolve_price") is not None else None),
+                    resolve_reference_price=ref,
+                )
+            )
+        except Exception:
+            continue
+    return out
+
+
 def assess_ticker(
     client: LLMClient,
     td: TickerData,
@@ -220,12 +271,14 @@ def assess_ticker(
     dossier: str = "",
     investor_notes: str = "",
     on_tool=None,
+    as_of: date | None = None,
+    calibration: str = "",
 ) -> ValuationAssessment | None:
     """Run ONE disciplined fair-value valuation, with the model free to call the
     DCF / reverse-DCF / exit-multiple calculators before submitting. Shared by the
     analyst node and the on-demand ``aib valuate`` command. None if the call fails."""
     user = prompts.build_analyst_message(
-        td, regime, market_thesis, position, dossier, investor_notes
+        td, regime, market_thesis, position, dossier, investor_notes, calibration
     )
     executor = valuation_tools.make_valuation_executor(on_call=on_tool)
     try:
@@ -241,7 +294,7 @@ def assess_ticker(
     upside = p.get("upside_pct")
     if upside is None and fair and price:
         upside = (fair / price - 1) * 100
-    return ValuationAssessment(
+    assessment = ValuationAssessment(
         ticker=td.ticker,
         sector=td.sector or "",
         archetype=str(p.get("archetype", "")),
@@ -274,6 +327,10 @@ def assess_ticker(
         suggested_max_weight=float(p.get("suggested_max_weight", 0.0)),
         confidence=int(p.get("confidence", 3)),
     )
+    assessment.predictions = _parse_predictions(
+        p.get("predictions", []), td, as_of or date.today()
+    )
+    return assessment
 
 
 def _to_decision(as_of: date, payload: dict) -> Decision:

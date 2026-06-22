@@ -72,12 +72,14 @@ def compute_metrics(
             ticker=ticker,
             name=m.get("name") or None,
             sector=m.get("sector") or None,
+            industry=m.get("sub_industry") or m.get("industry") or None,
             price=round(last, 2),
             prev_close=round(prev, 2),
             change_pct=round((last / prev - 1) * 100, 2) if prev else None,
             ret_1m=_pct_return(closes, 21),
             ret_3m=_pct_return(closes, 63),
             ret_6m=_pct_return(closes, 126),
+            ret_12m=_pct_return(closes, 252),
             above_50dma=(last > dma50) if dma50 else None,
             above_200dma=(last > dma200) if dma200 else None,
             vol_ratio=vol_ratio,
@@ -104,6 +106,7 @@ def screen(
     size: int,
     watchlist: list[str] | None = None,
     punished: list[str] | None = None,
+    punished_industries: list[str] | None = None,
 ) -> list[str]:
     """Return the shortlist of tickers from a *balanced* set of buckets.
 
@@ -122,6 +125,7 @@ def screen(
     explicit "always look at these" set."""
     watchlist = watchlist or []
     punished = punished or []
+    punished_industries = punished_industries or []
     always = list(dict.fromkeys(list(holdings) + watchlist))
     if not metrics:
         return always
@@ -150,12 +154,25 @@ def screen(
     )
     oversold_tickers = [td.ticker for td in oversold[: n_for("oversold")]]
 
-    # Bucket 4: the most beaten-down names *within* the punished sectors.
+    # Bucket 4: the most beaten-down names within the punished groups. Prefer the
+    # finer sub-INDUSTRY grain (e.g. 'Application Software') over the whole sector,
+    # so the contrarian bucket targets the part actually being repriced — not the
+    # whole sector blob that averages a semis melt-up against a SaaS collapse.
     punished_set = set(punished)
+    industry_set = set(punished_industries)
+
+    def _contrarian_rank(td) -> tuple[int, float]:
+        # 0 = name sits in a punished sub-industry (tightest), 1 = punished sector.
+        in_ind = (td.industry or "") in industry_set
+        return (0 if in_ind else 1, td.drawdown_pct)
+
     in_punished = sorted(
-        (td for td in ranked if (td.sector or "") in punished_set
-         and td.drawdown_pct is not None),
-        key=lambda td: td.drawdown_pct,
+        (
+            td for td in ranked
+            if td.drawdown_pct is not None
+            and ((td.industry or "") in industry_set or (td.sector or "") in punished_set)
+        ),
+        key=_contrarian_rank,
     )
     sector_tickers = [td.ticker for td in in_punished[: n_for("sector")]]
 
