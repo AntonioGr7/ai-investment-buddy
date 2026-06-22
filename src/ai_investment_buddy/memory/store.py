@@ -20,6 +20,7 @@ from .portfolio import Portfolio
 _PORTFOLIO_FILE = DATA_DIR / "portfolio.json"
 _TRADES_FILE = DATA_DIR / "trades.jsonl"
 _NAV_FILE = DATA_DIR / "nav_history.csv"
+_EXPERIMENT_FILE = DATA_DIR / "experiment.json"
 
 _NAV_FIELDS = ["date", "nav", "cash", "invested", "n_positions"]
 
@@ -37,6 +38,9 @@ def init_portfolio(capital: float | None = None, force: bool = False) -> Portfol
     cap = capital if capital is not None else SETTINGS.starting_capital
     pf = Portfolio(cash=cap, positions={})
     save_portfolio(pf)
+    # Stamp which model this experiment folder runs, so runs are comparable and a
+    # later run with a different provider can be flagged (mixing ruins the test).
+    save_experiment(SETTINGS.llm_provider, SETTINGS.decision_model)
     # Reset ledgers AND memory on (re)init, so state stays consistent.
     _TRADES_FILE.write_text("")
     if _NAV_FILE.exists():
@@ -48,6 +52,23 @@ def init_portfolio(capital: float | None = None, force: bool = False) -> Portfol
         if theses.exists():
             theses.unlink()
     return pf
+
+
+def save_experiment(provider: str, model: str) -> dict:
+    """Record which model powers this experiment folder."""
+    ensure_dirs()
+    data = {"provider": provider, "model": model, "started": now_utc().date().isoformat()}
+    _EXPERIMENT_FILE.write_text(json.dumps(data, indent=2))
+    return data
+
+
+def load_experiment() -> dict | None:
+    if not _EXPERIMENT_FILE.exists():
+        return None
+    try:
+        return json.loads(_EXPERIMENT_FILE.read_text())
+    except Exception:
+        return None
 
 
 def load_portfolio() -> Portfolio:

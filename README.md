@@ -179,6 +179,29 @@ before anything executes — `--no-feedback` to skip, or run it anytime with
 `aib feedback`. When you do execute, you can approve **all** trades at once or
 **select** them individually.
 
+### Running several models head-to-head
+
+Every bit of state lives under `AIB_DATA_DIR`, so you can run a separate, fully
+independent experiment per model just by pointing each at its own folder:
+
+```bash
+# seed one experiment per model (each folder is self-contained)
+AIB_DATA_DIR=runs/gemini AIB_LLM_PROVIDER=gemini    uv run aib init
+AIB_DATA_DIR=runs/openai AIB_LLM_PROVIDER=openai    uv run aib init
+AIB_DATA_DIR=runs/claude AIB_LLM_PROVIDER=anthropic uv run aib init
+
+# run each daily (a folder remembers its model and warns if you mix them in)
+AIB_DATA_DIR=runs/gemini AIB_LLM_PROVIDER=gemini    uv run aib run
+
+# see who's winning, since inception and vs the benchmarks
+uv run aib compare runs/gemini runs/openai runs/claude
+```
+
+Each folder stamps which model it runs (`experiment.json`), `aib run` refuses to
+silently mix models in a folder, and `aib compare` ranks them by return and
+relative-to-benchmark. The shared universe/price data is fetched per folder
+(cheap); only the decisions differ.
+
 ### Portability
 
 State is one thing you carry between machines:
@@ -225,6 +248,7 @@ uv run aib report               # the latest decision's full rationale
 uv run aib history              # NAV history vs benchmarks
 uv run aib export [file]        # serialize the whole bot to a portable snapshot
 uv run aib import <file>        # restore state on another machine and resume
+uv run aib compare runs/gemini runs/openai   # rank model experiments by performance
 uv run aib watchlist add NVDA AAPL   # add favorites (always deep-dived in full)
 uv run aib watchlist list            # show the watchlist
 uv run aib watchlist remove NVDA     # drop a favorite

@@ -22,7 +22,7 @@ SNAPSHOT_VERSION = 1
 # Artifacts to include, as paths relative to DATA_DIR.
 def _state_files() -> list[Path]:
     paths: list[Path] = []
-    for name in ("portfolio.json", "trades.jsonl", "nav_history.csv", "watchlist.jsonl"):
+    for name in ("portfolio.json", "trades.jsonl", "nav_history.csv", "watchlist.jsonl", "experiment.json"):
         p = DATA_DIR / name
         if p.exists():
             paths.append(p)

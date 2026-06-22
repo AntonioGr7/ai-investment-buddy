@@ -77,12 +77,21 @@ def init(
     except FileExistsError as e:
         console.print(f"[yellow]{e}[/yellow]")
         raise typer.Exit(1)
+    from .config import DATA_DIR
+
     console.print(
         Panel(
             f"Portfolio seeded with [bold green]${pf.cash:,.2f}[/bold green] cash.\n"
+            f"Model: [bold]{SETTINGS.llm_provider}[/bold] ({SETTINGS.decision_model})\n"
+            f"State folder: [bold]{DATA_DIR}[/bold]\n"
             f"Benchmarks to beat: {', '.join(SETTINGS.benchmarks)}.",
             title="AI Investment Buddy — initialized",
         )
+    )
+    console.print(
+        "[dim]Tip: run other models in their own folders to compare — "
+        "[bold]AIB_DATA_DIR=runs/openai AIB_LLM_PROVIDER=openai uv run aib init[/bold]. "
+        "Then [bold]aib compare runs/*[/bold].[/dim]"
     )
 
 
@@ -105,6 +114,24 @@ def run(
     if not store.is_initialized():
         console.print("[red]No portfolio yet.[/red] Run [bold]aib init[/bold] first.")
         raise typer.Exit(1)
+
+    # Guard against silently mixing models in one experiment folder — that would
+    # contaminate the comparison.
+    exp = store.load_experiment()
+    if exp and exp.get("provider") and exp["provider"] != SETTINGS.llm_provider:
+        console.print(
+            f"[yellow]This folder was initialized for [bold]{exp['provider']}[/bold] "
+            f"({exp.get('model','?')}), but you're running [bold]{SETTINGS.llm_provider}[/bold] "
+            f"({SETTINGS.decision_model}).[/yellow] Mixing models in one folder ruins the comparison."
+        )
+        if not yes and not typer.confirm("Run anyway (mix models in this folder)?", default=False):
+            console.print(
+                "[dim]Use a separate AIB_DATA_DIR per model, e.g. "
+                "AIB_DATA_DIR=runs/{p} AIB_LLM_PROVIDER={p} uv run aib run[/dim]".format(
+                    p=SETTINGS.llm_provider
+                )
+            )
+            raise typer.Exit(1)
 
     as_of = (
         datetime.strptime(date, "%Y-%m-%d").date() if date else date_cls.today()
@@ -162,6 +189,15 @@ def status():
     if not store.is_initialized():
         console.print("[red]No portfolio yet.[/red] Run [bold]aib init[/bold] first.")
         raise typer.Exit(1)
+
+    from .config import DATA_DIR
+
+    exp = store.load_experiment()
+    if exp:
+        console.print(
+            f"[dim]Experiment: [bold]{exp.get('provider','?')}[/bold] "
+            f"({exp.get('model','?')}) · folder {DATA_DIR} · since {exp.get('started','?')}[/dim]"
+        )
 
     pf = store.load_portfolio()
     prices = _latest_prices_for(pf)
@@ -288,6 +324,93 @@ def history():
     for r in rows:
         table.add_row(*[str(r.get(c, "")) for c in cols])
     console.print(table)
+
+
+@app.command()
+def compare(
+    dirs: list[str] = typer.Argument(
+        ..., help="Experiment folders to compare, e.g. runs/gemini runs/openai runs/claude."
+    ),
+):
+    """Compare model experiments living in different state folders.
+
+    Ranks each by return since inception and relative to the benchmarks, so you
+    can see which model is winning. Reads each folder's files directly (no run)."""
+    import csv as _csv
+    import json as _json
+    from pathlib import Path as _Path
+
+    bench_keys = list(SETTINGS.benchmarks.keys())
+    table = Table(title="Model experiments — performance since inception")
+    cols = ["Folder", "Model", "Days", "Start NAV", "Latest NAV", "Return"]
+    cols += [f"vs {k}" for k in bench_keys] + ["Trades"]
+    for c in cols:
+        table.add_column(c, justify="right")
+
+    def num(r: dict, k: str) -> float:
+        try:
+            return float(r.get(k, "") or "nan")
+        except Exception:
+            return float("nan")
+
+    def colored_pct(x) -> str:
+        if x is None or x != x:
+            return "?"
+        return f"[{'green' if x >= 0 else 'red'}]{x:+.1f}%[/]"
+
+    scored: list[tuple] = []
+    for d in dirs:
+        p = _Path(d)
+        nav_file = p / "nav_history.csv"
+        if not nav_file.exists():
+            console.print(f"[yellow]{d}: no nav_history.csv (not run yet?) — skipping.[/yellow]")
+            continue
+        with nav_file.open() as f:
+            rows = list(_csv.DictReader(f))
+        if not rows:
+            continue
+        first, last = rows[0], rows[-1]
+        start_nav, last_nav = num(first, "nav"), num(last, "nav")
+        ret = (last_nav / start_nav - 1) * 100 if start_nav and start_nav == start_nav else None
+        rels = []
+        for bk in bench_keys:
+            b0, b1 = num(first, bk), num(last, bk)
+            if b0 and b0 == b0 and b1 == b1 and ret is not None:
+                rels.append(ret - (b1 / b0 - 1) * 100)
+            else:
+                rels.append(None)
+        exp = {}
+        ef = p / "experiment.json"
+        if ef.exists():
+            try:
+                exp = _json.loads(ef.read_text())
+            except Exception:
+                exp = {}
+        model = exp.get("model") or exp.get("provider") or "?"
+        try:
+            days = (date_cls.fromisoformat(last["date"]) - date_cls.fromisoformat(first["date"])).days
+        except Exception:
+            days = "?"
+        tf = p / "trades.jsonl"
+        ntr = sum(1 for ln in tf.read_text().splitlines() if ln.strip()) if tf.exists() else 0
+        ret_cell = colored_pct(ret)
+        scored.append((ret if ret is not None else float("-inf"), [
+            d, str(model), str(days),
+            f"${start_nav:,.0f}" if start_nav == start_nav else "?",
+            f"${last_nav:,.0f}" if last_nav == last_nav else "?",
+            ret_cell, *[colored_pct(x) for x in rels], str(ntr),
+        ]))
+
+    if not scored:
+        console.print(
+            "[yellow]Nothing to compare.[/yellow] Run experiments in separate folders first, e.g.\n"
+            "  AIB_DATA_DIR=runs/gemini AIB_LLM_PROVIDER=gemini uv run aib run"
+        )
+        raise typer.Exit(0)
+    for _, row in sorted(scored, key=lambda s: s[0], reverse=True):  # best return first
+        table.add_row(*row)
+    console.print(table)
+    console.print("[dim]Best return first. 'vs <benchmark>' = experiment return minus that index's.[/dim]")
 
 
 # --- Watchlist ---------------------------------------------------------------

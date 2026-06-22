@@ -51,8 +51,8 @@ class Settings:
             return explicit
         return {
             "anthropic": "claude-opus-4-8",
-            "openai": "gpt-4o",
-            "gemini": "gemini-2.5-pro",
+            "openai": "gpt-5.4",
+            "gemini": "gemini-3.1-pro",
         }.get(self.llm_provider, "claude-opus-4-8")
 
     @property
@@ -152,7 +152,9 @@ class Settings:
 
     @property
     def snapshot_path(self) -> Path:
-        return Path(os.getenv("AIB_SNAPSHOT_PATH", str(REPO_ROOT / "aib-state.json")))
+        # Default INSIDE the data dir so each experiment folder is self-contained
+        # (separate AIB_DATA_DIR runs don't clobber a shared snapshot).
+        return Path(os.getenv("AIB_SNAPSHOT_PATH", str(DATA_DIR / "aib-state.json")))
 
     @property
     def anthropic_api_key(self) -> str | None:
