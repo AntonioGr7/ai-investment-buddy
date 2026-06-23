@@ -311,6 +311,7 @@ def assess_ticker(
         valuation_method=str(p.get("valuation_method", "")),
         fair_value=fair,
         current_price=price,
+        entry_price=p.get("entry_price"),
         upside_pct=round(upside, 1) if upside is not None else None,
         bear_value=p.get("bear_value"),
         downside_pct=(

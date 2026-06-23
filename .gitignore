@@ -220,3 +220,8 @@ __marimo__/
 # AI Investment Buddy runtime state (portfolio, trades, journal, cache)
 /data/
 /runs/
+
+# SQLite index — rebuildable from the JSON/JSONL files (aib db rebuild)
+aib.db
+aib.db-wal
+aib.db-shm

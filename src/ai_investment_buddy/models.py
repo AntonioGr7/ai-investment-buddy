@@ -12,6 +12,11 @@ from enum import Enum
 
 from pydantic import BaseModel, Field
 
+# How far ABOVE its attention price a name can sit and still count as
+# "APPROACHING" (worth close monitoring) rather than "FAR". 10% = within striking
+# distance of becoming actionable.
+ENTRY_APPROACH_BAND_PCT = 10.0
+
 
 # --- Market data -------------------------------------------------------------
 class PriceBar(BaseModel):
@@ -266,6 +271,13 @@ class ValuationAssessment(BaseModel):
     fair_value: float | None = None  # probability-weighted expected intrinsic value/share
     current_price: float | None = None
     upside_pct: float | None = None  # (fair_value/price - 1) * 100
+    # The "attention price": the price at or below which this name becomes a
+    # genuine fat pitch worth deploying capital — fair value minus the margin of
+    # safety this specific business demands (wider for low quality / high
+    # structural risk / illiquid small-caps). Above it the name is merely a WATCH;
+    # at or below it the agent should sit up. The number that makes monitoring
+    # actionable: it converts a vague "good business, too dear" into "I care at $X".
+    entry_price: float | None = None
     # Downside scenario: the bear-case value and % to it from current price (the risk).
     bear_value: float | None = None
     downside_pct: float | None = None  # (bear_value/price - 1) * 100, negative
@@ -311,6 +323,26 @@ class ValuationAssessment(BaseModel):
     # (memory/predictions.py); this just carries them out of the brain.
     predictions: list["Prediction"] = Field(default_factory=list, exclude=True)
 
+    def distance_to_entry_pct(self, price: float | None = None) -> float | None:
+        """How far ``price`` (default: the stored current price) sits ABOVE the
+        attention price, as a %. Negative = at or below entry (already in range)."""
+        px = price if price is not None else self.current_price
+        if px is None or not self.entry_price:
+            return None
+        return (px / self.entry_price - 1) * 100
+
+    def entry_status(self, price: float | None = None) -> str:
+        """TRIGGERED (price ≤ entry), APPROACHING (within the watch band above
+        entry), FAR (needs a meaningful drop), or UNKNOWN (no entry/price)."""
+        d = self.distance_to_entry_pct(price)
+        if d is None:
+            return "UNKNOWN"
+        if d <= 0:
+            return "TRIGGERED"
+        if d <= ENTRY_APPROACH_BAND_PCT:
+            return "APPROACHING"
+        return "FAR"
+
     def one_line(self) -> str:
         fv = f"${self.fair_value:.0f}" if self.fair_value else "?"
         px = f"${self.current_price:.0f}" if self.current_price else "?"
@@ -320,9 +352,14 @@ class ValuationAssessment(BaseModel):
         rr = f" | R/R {self.risk_reward}" if self.risk_reward is not None else ""
         down = f" | downside {self.downside_pct:+.0f}%" if self.downside_pct is not None else ""
         sr = f" | struct-risk {self.structural_risk}" if self.structural_risk else ""
+        entry = ""
+        if self.entry_price:
+            d = self.distance_to_entry_pct()
+            dist = f" ({d:+.0f}% away)" if d is not None else ""
+            entry = f" | attention ≤${self.entry_price:.0f} [{self.entry_status()}{dist}]"
         return (
             f"{self.ticker}: {arch}{self.recommendation} | {self.valuation_verdict} | "
-            f"fair {fv} vs {px} ({up}){down}{rr} | quality {self.quality_score}/5 | "
+            f"fair {fv} vs {px} ({up}){down}{rr}{entry} | quality {self.quality_score}/5 | "
             f"MoS={'Y' if self.margin_of_safety else 'N'} | conf {self.confidence}/5{mkt}{sr}"
         )
 

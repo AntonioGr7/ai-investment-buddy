@@ -31,26 +31,54 @@ def _path(ticker: str) -> Path:
     return VALUATIONS_DIR / f"{ticker.upper()}.json"
 
 
+# --- Attention price ---------------------------------------------------------
+# Fallback only: the analyst is asked to author entry_price directly (it can weigh
+# catalysts and name-specific nuance). When it omits it, we derive a sane default
+# from fair value minus the margin of safety the business demands — wider for low
+# quality and high structural risk, the same logic the analyst is told to apply.
+_STRUCT_MARGIN = {"LOW": 0.0, "MEDIUM": 0.05, "HIGH": 0.15, "SEVERE": 0.30}
+_BASE_MARGIN = 0.15
+_MIN_MARGIN, _MAX_MARGIN = 0.10, 0.45
+
+
+def required_margin(a: ValuationAssessment) -> float:
+    """The margin of safety (as a fraction of fair value) this name should demand
+    before it's worth acting on — used to derive a fallback attention price."""
+    m = _BASE_MARGIN
+    m += _STRUCT_MARGIN.get(a.structural_risk, 0.05)
+    m += (3 - a.quality_score) * 0.03  # lower quality → demand a deeper discount
+    return max(_MIN_MARGIN, min(_MAX_MARGIN, m))
+
+
+def derive_entry_price(a: ValuationAssessment) -> float | None:
+    """Fallback attention price = fair_value × (1 − required margin). None when we
+    have no fair value to anchor on."""
+    if not a.fair_value or a.fair_value <= 0:
+        return None
+    return round(a.fair_value * (1 - required_margin(a)), 2)
+
+
 def load(ticker: str) -> ValuationRecord | None:
-    p = _path(ticker)
-    if not p.exists():
-        return None
-    try:
-        return ValuationRecord.model_validate_json(p.read_text())
-    except Exception:
-        return None
+    """Read one name's record from the DB (the synchronized index). The per-name
+    JSON file remains the durable export written alongside on every save."""
+    from . import db
+
+    return db.get_valuation(ticker)
 
 
 def load_all() -> list[ValuationRecord]:
-    if not VALUATIONS_DIR.exists():
-        return []
-    out: list[ValuationRecord] = []
-    for p in sorted(VALUATIONS_DIR.glob("*.json")):
-        try:
-            out.append(ValuationRecord.model_validate_json(p.read_text()))
-        except Exception:
-            continue
-    return out
+    from . import db
+
+    return db.all_valuations()
+
+
+def search(query: str, limit: int = 50) -> list[ValuationRecord]:
+    """Full-text search the thesis prose (bull/bear/mispricing/news/etc.). Returns
+    matching records, best match first. Empty if FTS is unavailable. Powers the
+    eventual frontend's 'read the thesis' / search-by-idea navigation."""
+    from . import db
+
+    return [r for r in (load(t) for t in db.search_valuations(query, limit)) if r]
 
 
 def save_valuation(
@@ -66,6 +94,9 @@ def save_valuation(
     ensure_dirs()
     VALUATIONS_DIR.mkdir(parents=True, exist_ok=True)
     ticker = assessment.ticker.upper()
+    # Backfill the attention price deterministically if the analyst didn't author one.
+    if assessment.entry_price is None:
+        assessment.entry_price = derive_entry_price(assessment)
     entry = StoredValuation(
         as_of=as_of, regime=regime, assessment=assessment,
         news_seen=list(headlines or []),
@@ -90,8 +121,20 @@ def save_valuation(
             history=history,
             notes=existing.notes,
         )
-    _path(ticker).write_text(rec.model_dump_json(indent=2))
+    _persist(rec, regime)
     return rec
+
+
+def _persist(rec: ValuationRecord, regime: str) -> None:
+    """Dual-write: the per-name JSON file (durable, git-diffable, snapshot-bundled
+    export) AND the SQLite index (the queryable read source). The file is written
+    first so a DB hiccup never loses data — the index is rebuildable from it."""
+    from . import db
+
+    VALUATIONS_DIR.mkdir(parents=True, exist_ok=True)
+    _path(rec.ticker).write_text(rec.model_dump_json(indent=2))
+    a = rec.latest.assessment
+    db.upsert_valuation(rec, regime, opportunity_score(a), a.entry_price)
 
 
 def save_many(
@@ -117,7 +160,7 @@ def add_note(ticker: str, note: InvestorNote) -> bool:
     if rec is None:
         return False
     rec.notes.append(note)
-    _path(ticker).write_text(rec.model_dump_json(indent=2))
+    _persist(rec, rec.latest.regime)
     return True
 
 
@@ -203,7 +246,8 @@ def rank_opportunities(
 # --- The market-wide board ---------------------------------------------------
 BOARD_COLUMNS = [
     "score", "ticker", "sector", "archetype", "recommendation", "market_view",
-    "current_price", "fair_value", "upside_pct", "downside_pct", "risk_reward",
+    "current_price", "fair_value", "entry_price", "distance_to_entry", "entry_status",
+    "upside_pct", "downside_pct", "risk_reward",
     "structural_risk", "valuation_verdict", "quality_score", "margin_of_safety",
     "confidence", "rerating_catalyst", "last_assessed",
 ]
@@ -216,6 +260,10 @@ def board_rows(records: list[ValuationRecord] | None = None) -> list[dict]:
     rows = []
     for rec, score in rank_opportunities(records):
         a = rec.latest.assessment
+        # Backfill a fallback attention price for names valued before the field
+        # existed, so existing coverage gets it without waiting for re-valuation.
+        if a.entry_price is None:
+            a.entry_price = derive_entry_price(a)
         rows.append({
             "score": score,
             "ticker": a.ticker,
@@ -225,6 +273,9 @@ def board_rows(records: list[ValuationRecord] | None = None) -> list[dict]:
             "market_view": a.market_view,
             "current_price": a.current_price,
             "fair_value": a.fair_value,
+            "entry_price": a.entry_price,
+            "distance_to_entry": a.distance_to_entry_pct(),
+            "entry_status": a.entry_status(),
             "upside_pct": a.upside_pct,
             "downside_pct": a.downside_pct,
             "risk_reward": a.risk_reward,
@@ -249,9 +300,9 @@ def format_board_markdown(records: list[ValuationRecord] | None = None) -> str:
         v = r[k]
         if v is None:
             return "?"
-        if k in ("upside_pct", "downside_pct"):
+        if k in ("upside_pct", "downside_pct", "distance_to_entry"):
             return f"{v:+.0f}%"
-        if k in ("current_price", "fair_value"):
+        if k in ("current_price", "fair_value", "entry_price"):
             return f"${v:.2f}"
         if k == "margin_of_safety":
             return "Y" if v else "—"
@@ -264,8 +315,8 @@ def format_board_markdown(records: list[ValuationRecord] | None = None) -> str:
         return str(v)
 
     headers = ["Score", "Ticker", "Sector", "Type", "Rec", "Market", "Price",
-               "Fair", "Upside", "Down", "R/R", "StructRisk", "Verdict", "Q",
-               "MoS", "Conf", "Catalyst", "As of"]
+               "Fair", "Entry", "ΔEntry", "Status", "Upside", "Down", "R/R",
+               "StructRisk", "Verdict", "Q", "MoS", "Conf", "Catalyst", "As of"]
     lines = [
         f"# Opportunity board — {len(rows)} names valued",
         "",

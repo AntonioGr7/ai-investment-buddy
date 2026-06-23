@@ -46,36 +46,33 @@ def make_id(ticker: str, created: date, statement: str) -> str:
 
 
 def load_all() -> list[Prediction]:
-    if not _FILE.exists():
-        return []
-    out: list[Prediction] = []
-    for line in _FILE.read_text().splitlines():
-        line = line.strip()
-        if line:
-            try:
-                out.append(Prediction.model_validate_json(line))
-            except Exception:
-                continue
-    return out
+    """Read the full ledger from the DB index. The JSONL file is the durable copy
+    written alongside on every change (and snapshot-bundled)."""
+    from . import db
+
+    return db.all_predictions()
 
 
 def _write_all(preds: list[Prediction]) -> None:
+    """Dual-write: the JSONL ledger (durable, snapshot-bundled) AND the SQLite
+    index (the read source). File first so a DB hiccup never loses data."""
+    from . import db
+
     ensure_dirs()
     _FILE.write_text("".join(p.model_dump_json() + "\n" for p in preds))
+    db.replace_predictions(preds)
 
 
 def add_many(preds: list[Prediction]) -> list[Prediction]:
-    """Append new predictions, skipping ids already on the ledger (idempotent)."""
+    """Add new predictions, skipping ids already on the ledger (idempotent)."""
     if not preds:
         return []
-    existing = {p.id for p in load_all()}
+    existing_list = load_all()
+    existing = {p.id for p in existing_list}
     fresh = [p for p in preds if p.id not in existing]
     if not fresh:
         return []
-    ensure_dirs()
-    with _FILE.open("a") as f:
-        for p in fresh:
-            f.write(p.model_dump_json() + "\n")
+    _write_all(existing_list + fresh)
     return fresh
 
 

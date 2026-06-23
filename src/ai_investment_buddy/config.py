@@ -179,6 +179,23 @@ class Settings:
     macro_provider: str = os.getenv("AIB_MACRO_PROVIDER", "yfinance")
     market_news_provider: str = os.getenv("AIB_MARKET_NEWS_PROVIDER", "rss")
 
+    # --- Hang guards (no single run should ever stall for hours) ---
+    # Global default socket timeout (seconds): the universal backstop so a stalled
+    # network read (e.g. yfinance, which passes no timeout of its own) raises
+    # instead of blocking the process forever. Applied at import (see runtime.py).
+    # 0 disables it. Kept ABOVE the LLM read timeout so long model responses (which
+    # set their own explicit socket timeout) are never cut short by this default.
+    network_timeout: int = int(os.getenv("AIB_NETWORK_TIMEOUT", "60"))
+    # Explicit LLM client request timeout + retry cap (seconds / count). Bounds the
+    # worst case of a model call to ~llm_timeout × (llm_max_retries + 1).
+    llm_timeout: int = int(os.getenv("AIB_LLM_TIMEOUT", "300"))
+    llm_max_retries: int = int(os.getenv("AIB_LLM_MAX_RETRIES", "2"))
+    # Whole-command wall-clock deadlines (seconds): the catch-all for any unforeseen
+    # hang in a directly-invoked CLI run. Generous enough never to trip a healthy
+    # run; 0 disables. (The API trigger has its own subprocess timeout.)
+    valuate_deadline: int = int(os.getenv("AIB_VALUATE_DEADLINE", "1200"))
+    run_deadline: int = int(os.getenv("AIB_RUN_DEADLINE", "3600"))
+
     @property
     def finnhub_api_key(self) -> str | None:
         return os.getenv("FINNHUB_API_KEY")

@@ -45,7 +45,11 @@ class AnthropicClient:
     def __init__(self) -> None:
         from anthropic import Anthropic
 
-        self.client = Anthropic(api_key=SETTINGS.anthropic_api_key)
+        self.client = Anthropic(
+            api_key=SETTINGS.anthropic_api_key,
+            timeout=SETTINGS.llm_timeout,
+            max_retries=SETTINGS.llm_max_retries,
+        )
 
     def structured_call(self, system: str, user: str, tool: dict) -> dict:
         resp = self.client.messages.create(
@@ -106,6 +110,8 @@ class OpenAIClient:
         self.client = OpenAI(
             api_key=SETTINGS.openai_api_key,
             base_url=SETTINGS.openai_base_url,  # None => default OpenAI endpoint
+            timeout=SETTINGS.llm_timeout,
+            max_retries=SETTINGS.llm_max_retries,
         )
         # Some reasoning models reject temperature/seed — disable after a 400 so we
         # don't retry on every call for the rest of the process.

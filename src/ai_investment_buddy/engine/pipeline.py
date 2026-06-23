@@ -14,7 +14,7 @@ from ..brain import screener, sectors
 from ..brain.decide import DecisionEngine
 from ..config import SETTINGS
 from ..data import get_providers
-from ..memory import Journal, MemoryToolkit, snapshot, store, valuations
+from ..memory import Journal, MemoryToolkit, radar, snapshot, store, valuations
 from ..memory.portfolio import Portfolio
 from ..models import (
     Decision,
@@ -388,6 +388,13 @@ def run_daily(
     progress(f"Stored {n_val} fresh valuation(s) → data/valuations/.")
     if valuations.write_board():
         progress("Updated market opportunity board → data/opportunities.md.")
+    radar_rows = radar.radar_rows(prices=prices)
+    if radar.write_radar(prices=prices):
+        n_trig = sum(1 for r in radar_rows if r["status"] == "TRIGGERED")
+        progress(
+            f"Refreshed radar ({len(radar_rows)} on watch, {n_trig} triggered) "
+            "→ data/radar.md."
+        )
     # Audit: macro read, the sector trend map, and the per-finalist news the agent
     # fetched after selection (headlines now attached to the finalist tickers).
     audit.write_news(as_of, macro, market_news, shortlist, sector_scan)

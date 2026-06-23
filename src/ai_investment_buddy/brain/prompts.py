@@ -292,6 +292,13 @@ uncertainty and lower confidence.
 5. Judge business quality (1-5) and whether there is a genuine MARGIN OF SAFETY (price meaningfully \
 below a conservatively-estimated value — not just 'it fell a lot'). A falling price is necessary but \
 NOT sufficient: distinguish a mispriced quality business from a deserved de-rating / value trap.
+5b. ATTENTION PRICE (entry_price): commit to the single price at/below which you'd actually deploy \
+capital into this name — fair_value minus the margin of safety THIS business demands. The margin is \
+not one-size-fits-all: a high-quality COMPOUNDER with LOW structural risk earns a tight margin \
+(~10-15%); a low-quality, HIGH/SEVERE-structural-risk, or thin small-cap name must be far cheaper \
+(~30-45%) before it's worth the risk. This is the number that makes monitoring actionable — it turns \
+'good business, too dear' into 'I care at $X' — so set it deliberately even when you recommend WATCH \
+(especially then: it's the level that would flip your WATCH to a BUY). It must sit below fair_value.
 6. NEWS & SENTIMENT (this name was chosen on trend/value; now do the news due diligence): from the \
 RECENT NEWS provided, identify the MATERIAL items, judge how they affect the business and the stock, \
 and read the prevailing sentiment. The decisive question ties back to the over/under-reaction call: \
@@ -353,6 +360,7 @@ ANALYST_TOOL = {
                 "(e.g. 'Rule of 40 + EV/S vs growth; reverse-DCF on revenue').",
             },
             "fair_value": {"type": "number", "description": "PROBABILITY-WEIGHTED expected intrinsic value/share (the expected_value from probability_weighted_value)."},
+            "entry_price": {"type": "number", "description": "The ATTENTION PRICE: the price at/below which this name becomes a genuine fat pitch worth deploying capital — fair_value minus the margin of safety THIS business demands (wider for low quality, HIGH/SEVERE structural risk, or thin small-caps; tighter for high-quality compounders). Above it the name is a WATCH; at/below it you'd act. Must be below fair_value, and usually at/below today's price only when you're already recommending BUY/ADD."},
             "upside_pct": {"type": "number", "description": "(fair_value/price - 1) * 100."},
             "bear_value": {"type": "number", "description": "Bear/worst-case value per share — the downside floor."},
             "downside_pct": {"type": "number", "description": "(bear_value/price - 1) * 100 (negative)."},
@@ -436,7 +444,7 @@ ANALYST_TOOL = {
             },
         },
         "required": [
-            "archetype", "valuation_method", "fair_value", "valuation_verdict",
+            "archetype", "valuation_method", "fair_value", "entry_price", "valuation_verdict",
             "bear_value", "downside_pct", "risk_reward", "structural_risk",
             "why_market_disagrees", "rerating_catalyst",
             "quality_score", "margin_of_safety", "market_implied", "market_view",
@@ -588,6 +596,10 @@ def _fmt_assessment(a: ValuationAssessment) -> str:
         f"{a.one_line()}\n"
         f"    suggested_max_weight={a.suggested_max_weight:.0%}"
     )
+    if a.entry_price:
+        d = a.distance_to_entry_pct()
+        dist = f", {d:+.0f}% from it" if d is not None else ""
+        out += f"\n    attention price: act at ≤${a.entry_price:.2f} [{a.entry_status()}{dist}]"
     if a.why_market_disagrees:
         out += f"\n    why market disagrees (bear it's pricing): {a.why_market_disagrees}"
     if a.rerating_catalyst:

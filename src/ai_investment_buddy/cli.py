@@ -20,6 +20,7 @@ from rich.table import Table
 from pathlib import Path
 
 from .config import SETTINGS
+from .runtime import deadline
 from .engine import commit, run_daily
 from .engine.attribution import SeriesPoint, attribution_report
 from .engine.benchmark import performance_summary
@@ -142,9 +143,10 @@ def run(
             status.update(f"[bold]{msg}")
             console.log(msg)
 
-        result = run_daily(
-            as_of=as_of, dry_run=True, on_progress=progress, force_revaluation=force
-        )
+        with deadline(SETTINGS.run_deadline, "aib run"):
+            result = run_daily(
+                as_of=as_of, dry_run=True, on_progress=progress, force_revaluation=force
+            )
 
     _render_decision(result)
     console.print(
@@ -594,6 +596,77 @@ watchlist_app = typer.Typer(
 app.add_typer(watchlist_app, name="watchlist")
 
 
+db_app = typer.Typer(
+    no_args_is_help=True,
+    help="The SQLite index over the valuation corpus (the queryable read layer). "
+    "The per-name JSON files and predictions.jsonl stay the durable source; this "
+    "index is rebuildable from them at any time.",
+)
+app.add_typer(db_app, name="db")
+
+
+@app.command()
+def serve(
+    host: str = typer.Option("127.0.0.1", help="Bind address (0.0.0.0 to expose)."),
+    port: int = typer.Option(8000, help="Port."),
+    reload: bool = typer.Option(False, "--reload", help="Auto-reload on code changes (dev)."),
+):
+    """Serve the read API (board, radar, company, thesis search, predictions) plus
+    the on-demand POST /valuate/{ticker} trigger. Interactive docs at /docs."""
+    import uvicorn
+
+    console.print(
+        f"[green]Serving API[/green] at http://{host}:{port}  ·  docs: http://{host}:{port}/docs"
+    )
+    uvicorn.run("ai_investment_buddy.api.app:app", host=host, port=port, reload=reload)
+
+
+@db_app.command("rebuild")
+def db_rebuild():
+    """Drop and regenerate the index from the JSON/JSONL files (migration + repair)."""
+    from .memory import db as _db
+
+    info = _db.rebuild_from_files()
+    console.print(
+        f"[green]Rebuilt index at {info['path']}[/green]: "
+        f"{info['valuations']} valuations, {info['predictions']} predictions."
+    )
+
+
+@db_app.command("info")
+def db_info():
+    """Show where the index lives and what it holds."""
+    from .memory import db as _db
+
+    conn = _db.connect()
+    nv = conn.execute("SELECT COUNT(*) FROM valuations").fetchone()[0]
+    npred = conn.execute("SELECT COUNT(*) FROM predictions").fetchone()[0]
+    fts = _db._has_fts.get(str(_db._db_path()), False)
+    console.print(f"Index: [bold]{_db._db_path()}[/bold]")
+    console.print(f"  valuations: {nv}  ·  predictions: {npred}  ·  "
+                  f"full-text search: {'on' if fts else 'unavailable'}")
+
+
+@db_app.command("search")
+def db_search(
+    query: str = typer.Argument(..., help="Full-text query over the thesis prose, e.g. 'AI moat erosion'."),
+    limit: int = typer.Option(20, help="Max results."),
+):
+    """Search every name's thesis (bull/bear/mispricing/news/risks) by idea."""
+    from .memory import valuations as _v
+
+    recs = _v.search(query, limit)
+    if not recs:
+        console.print(
+            f"[yellow]No matches for[/yellow] '{query}'. "
+            "(If full-text search is unavailable, run [bold]aib db rebuild[/bold] "
+            "on a Python with sqlite FTS5.)"
+        )
+        raise typer.Exit(0)
+    console.print(_assessment_table([r.latest.assessment for r in recs],
+                                    title=f"Thesis search — '{query}' ({len(recs)})"))
+
+
 def _print_watchlist(tickers: list[str]) -> None:
     if not tickers:
         console.print(
@@ -657,13 +730,18 @@ _MKT_COLOR = {"OVERREACTING": "green", "UNDERREACTING": "red", "FAIR": "dim"}
 
 def _assessment_table(assessments, title: str = "Analyst valuations (fair value vs price)") -> Table:
     vt = Table(title=title)
-    for col in ("Ticker", "Type", "Rec", "Verdict", "Market", "Fair", "Price", "Upside", "Qual", "MoS", "Conf"):
+    for col in ("Ticker", "Type", "Rec", "Verdict", "Market", "Fair", "Price", "Entry", "Upside", "Qual", "MoS", "Conf"):
         vt.add_column(col, justify="right")
     for a in assessments:
         c = _REC_COLOR.get(a.recommendation, "white")
         up = f"{a.upside_pct:+.0f}%" if a.upside_pct is not None else "?"
         up_c = "green" if (a.upside_pct or 0) > 0 else "red"
         mc = _MKT_COLOR.get(a.market_view, "white")
+        entry = "?"
+        if a.entry_price:
+            st = a.entry_status()
+            ec = {"TRIGGERED": "bold green", "APPROACHING": "yellow"}.get(st, "dim")
+            entry = f"[{ec}]${a.entry_price:.0f}[/{ec}]"
         vt.add_row(
             a.ticker,
             f"[dim]{a.archetype.title()}[/dim]" if a.archetype else "[dim]?[/dim]",
@@ -672,6 +750,7 @@ def _assessment_table(assessments, title: str = "Analyst valuations (fair value 
             f"[{mc}]{a.market_view.title()}[/{mc}]" if a.market_view else "",
             f"${a.fair_value:.0f}" if a.fair_value else "?",
             f"${a.current_price:.0f}" if a.current_price else "?",
+            entry,
             f"[{up_c}]{up}[/{up_c}]",
             f"{a.quality_score}/5",
             "[green]Y[/green]" if a.margin_of_safety else "[dim]N[/dim]",
@@ -690,6 +769,13 @@ def _render_assessment_detail(a) -> None:
         f"[bold]Risk/reward {rr}[/bold]  ·  upside {up}  ·  downside {down}  ·  "
         f"structural risk [{sr_color.get(a.structural_risk,'white')}]{a.structural_risk}[/]"
     )
+    if a.entry_price:
+        d = a.distance_to_entry_pct()
+        dist = f"  ({d:+.0f}% away)" if d is not None else ""
+        body.append(
+            f"[bold]Attention price:[/bold] act at ≤${a.entry_price:.2f} "
+            f"[{a.entry_status()}]{dist}"
+        )
     if a.why_market_disagrees:
         body.append(f"[bold]Why the market disagrees:[/bold] {a.why_market_disagrees}")
     if a.rerating_catalyst:
@@ -745,7 +831,7 @@ def valuate(
 
     as_of = date_cls.today()
     results = []
-    with console.status("[bold]Valuing…", spinner="dots") as status:
+    with deadline(SETTINGS.valuate_deadline, "aib valuate"), console.status("[bold]Valuing…", spinner="dots") as status:
         providers = get_providers()
         uni = {c["ticker"]: c for c in get_universe()}
         status.update("Downloading price history…")
@@ -783,9 +869,11 @@ def valuate(
     if not results:
         console.print("[red]No valuations produced.[/red]")
         raise typer.Exit(1)
+    from .memory import radar as _radar
     from .memory import valuations as _v
 
     _v.write_board()  # keep the market board current
+    _radar.write_radar()  # and the agent's watchlist
     console.print(_assessment_table(results, title="Valuation"))
     for a in results:
         _render_assessment_detail(a)
@@ -936,6 +1024,71 @@ def opportunities(
         "[dim]Risk-adjusted score: reward/risk + downside − structural-risk penalty (a cheap "
         "value trap sinks). Watch one with [bold]aib watchlist add TICKER[/bold]; deep-dive with "
         "[bold]aib valuate TICKER[/bold]. Full board: data/opportunities.md[/dim]"
+    )
+
+
+@app.command()
+def radar(
+    limit: int = typer.Option(0, help="How many names to show (0 = all)."),
+    triggered_only: bool = typer.Option(
+        False, "--triggered", help="Only names already at/below their attention price."
+    ),
+):
+    """The agent's self-built watchlist: names that have fallen to (TRIGGERED) or
+    near (APPROACHING) the attention price the analyst set — i.e. where the market
+    is finally getting interesting. The actionable slice of the opportunity board,
+    value traps excluded. Kept fresh at data/radar.md after every run."""
+    from .memory import radar as _radar
+
+    rows = _radar.radar_rows()
+    if triggered_only:
+        rows = [r for r in rows if r["status"] == "TRIGGERED"]
+    if not rows:
+        console.print(
+            "[yellow]Nothing on the radar yet.[/yellow] No valued name is at or near "
+            "its attention price. Build coverage with [bold]aib run[/bold] or "
+            "[bold]aib valuate TICKER[/bold]."
+        )
+        raise typer.Exit(0)
+
+    total = len(rows)
+    shown = rows if limit in (0, None) else rows[:limit]
+    n_trig = sum(1 for r in rows if r["status"] == "TRIGGERED")
+    status_color = {"TRIGGERED": "bold green", "APPROACHING": "yellow"}
+    sr_color = {"LOW": "green", "MEDIUM": "yellow", "HIGH": "red", "SEVERE": "bold red"}
+    table = Table(title=f"Radar — {n_trig} triggered, {total - n_trig} approaching")
+    for col in ("Status", "Ticker", "Sector", "Rec", "Price", "Entry", "ΔEntry",
+                "Fair", "Up", "R/R", "StructRisk", "Score", "As of"):
+        table.add_column(col, justify="right")
+    for r in shown:
+        c = _REC_COLOR.get(r["recommendation"], "white")
+        st = r["status"]
+        d = r["distance_to_entry"]
+        dist = f"{d:+.0f}%" if d is not None else "?"
+        up = f"{r['upside_pct']:+.0f}%" if r["upside_pct"] is not None else "?"
+        up_c = "green" if (r["upside_pct"] or 0) > 0 else "red"
+        rr = f"{r['risk_reward']:.1f}" if r["risk_reward"] is not None else "?"
+        sr = r["structural_risk"] or "?"
+        score_c = "green" if r["score"] > 0 else "dim"
+        table.add_row(
+            f"[{status_color.get(st, 'white')}]{st}[/]",
+            r["ticker"],
+            f"[dim]{(r['sector'] or '?')[:12]}[/dim]",
+            f"[{c}]{r['recommendation']}[/{c}]",
+            f"${r['price']:.0f}" if r["price"] else "?",
+            f"${r['entry_price']:.0f}" if r["entry_price"] else "?",
+            f"[{'green' if (d or 0) <= 0 else 'yellow'}]{dist}[/]",
+            f"${r['fair_value']:.0f}" if r["fair_value"] else "?",
+            f"[{up_c}]{up}[/{up_c}]",
+            rr,
+            f"[{sr_color.get(sr,'white')}]{sr}[/]",
+            f"[{score_c}]{r['score']:+.1f}[/{score_c}]",
+            r["last_assessed"],
+        )
+    console.print(table)
+    console.print(
+        "[dim]ΔEntry = how far price sits above the attention price (≤0 = TRIGGERED). "
+        "Deep-dive one with [bold]aib valuate TICKER[/bold]. Full radar: data/radar.md[/dim]"
     )
 
 

@@ -102,4 +102,13 @@ def import_state(path: Path, force: bool = False) -> dict:
             raise ValueError(f"Refusing to write outside data dir: {rel}")
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content)
+    # The SQLite index isn't bundled (it's rebuildable) — regenerate it from the
+    # files we just restored so reads are immediately consistent.
+    try:
+        from . import db
+
+        db._reset_for_tests()  # drop any stale cached connection for this DATA_DIR
+        db.rebuild_from_files()
+    except Exception:
+        pass
     return snap
