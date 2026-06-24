@@ -62,6 +62,24 @@ class Settings:
         raw = os.getenv("AIB_SEED", "7").strip()
         return int(raw) if raw else None
 
+    # How hard the model should THINK before answering, applied to every brain
+    # call (strategist / analyst / PM). "off" = a direct answer (fastest, cheapest);
+    # low / medium / high = progressively more internal reasoning. The valuation is
+    # genuinely multi-step (DCF inputs, scenario probabilities, steelmanning the
+    # bear), so medium is a sensible default — this is a once-a-day batch job, so
+    # latency is not a constraint and decision quality is the whole point.
+    #   - OpenAI: maps to `reasoning_effort` (reasoning models only; auto-dropped if
+    #     the model rejects it).
+    #   - Anthropic: enables extended thinking with a token budget. NOTE: thinking
+    #     requires temperature=1 and disallows forced tool_choice, so on Anthropic
+    #     enabling this trades away the low-temp+seed determinism (thinking reduces
+    #     that noise on its own). Set "off" to keep strict reproducibility.
+    #   - Gemini: maps to a thinking_budget.
+    @property
+    def reasoning_effort(self) -> str:
+        v = os.getenv("AIB_REASONING_EFFORT", "medium").strip().lower()
+        return v if v in ("off", "low", "medium", "high") else "medium"
+
     @property
     def decision_model(self) -> str:
         explicit = os.getenv("AIB_MODEL")

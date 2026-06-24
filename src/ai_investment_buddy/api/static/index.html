@@ -485,8 +485,11 @@ function renderCompany(d){
         ${recPill(a.recommendation)} ${mvPill(a.market_view)}
         <span class="pill neutral">${esc(a.valuation_verdict)}</span>
         <span class="pill neutral">score ${d.opportunity_score>=0?"+":""}${d.opportunity_score.toFixed(1)}</span>
+        <button class="btn ghost" id="reanalyzeBtn" style="padding:7px 14px;font-size:13px"
+          onclick="reanalyze('${esc(a.ticker)}')">↻ Re-analyze</button>
       </div>
     </div>
+    <div id="reanalyzeStatus"></div>
 
     <div class="grid valgrid">
       ${stat("Price",fmtUsd(a.current_price,2))}
@@ -574,6 +577,37 @@ async function loadMetrics(ticker){
   }).filter(Boolean).join("");
   el.innerHTML=`<div class="card metrics-card"><h2>Key metrics
     <span class="muted" style="font-weight:400;font-size:12px">· live</span></h2>${groups}</div>`;
+}
+
+// Force a fresh valuation of the company currently on screen, then reload it.
+// `aib valuate` always bypasses the cache, so this is a true re-computation.
+async function reanalyze(ticker){
+  const btn=$("#reanalyzeBtn"), st=$("#reanalyzeStatus");
+  if(btn) btn.disabled=true;
+  st.innerHTML=`<div class="card" style="margin-bottom:18px"><span class="spinner"></span>
+    Re-analyzing <b class="mono">${esc(ticker)}</b> from scratch — running the full analyst pipeline (a minute or two)…</div>`;
+  try{
+    const j=await api("/valuate/"+encodeURIComponent(ticker),{method:"POST"});
+    const poll=async()=>{
+      let s;
+      try{ s=await api("/jobs/"+j.job_id); }
+      catch(e){ st.innerHTML=`<div class="err">${esc(e.message)}</div>`; if(btn)btn.disabled=false; return; }
+      if(s.status==="done"){
+        board=[]; // invalidate cached opportunities board
+        st.innerHTML=`<div class="card" style="margin-bottom:18px"><b class="pos">✓ Re-analyzed.</b> Loading the fresh assessment…</div>`;
+        loadCompany(ticker); // re-render with the new valuation (clears status)
+        return;
+      }
+      if(s.status==="error"){
+        st.innerHTML=`<div class="err"><b>Re-analysis failed.</b><br><span class="mono" style="font-size:12px">${esc((s.error||"").slice(-600))}</span></div>`;
+        if(btn) btn.disabled=false; return;
+      }
+      st.innerHTML=`<div class="card" style="margin-bottom:18px"><span class="spinner"></span>
+        <b class="mono">${esc(ticker)}</b> — ${esc(s.status)}… <span class="muted">(polling)</span></div>`;
+      setTimeout(poll,3000);
+    };
+    poll();
+  }catch(e){ st.innerHTML=`<div class="err">${esc(e.message)}</div>`; if(btn) btn.disabled=false; }
 }
 
 // ===================== ANALYZE =====================

@@ -18,6 +18,11 @@ from ..config import SETTINGS
 # Default cap on tool-use rounds in an agentic loop (memory lookups + final).
 _MAX_AGENT_ITERS = 8
 
+# Extended-thinking token budgets per effort level (Anthropic & Gemini). "off" is
+# absent → no thinking requested. Anthropic needs max_tokens > budget.
+_ANTHROPIC_THINK_BUDGET = {"low": 2048, "medium": 6144, "high": 12288}
+_GEMINI_THINK_BUDGET = {"low": 2048, "medium": 8192, "high": 24576}
+
 
 class LLMClient(Protocol):
     def structured_call(self, system: str, user: str, tool: dict) -> dict:
@@ -51,15 +56,33 @@ class AnthropicClient:
             max_retries=SETTINGS.llm_max_retries,
         )
 
+    def _tuning(self, forced_choice: dict) -> dict:
+        """Per-call knobs. With extended thinking ON, Anthropic requires
+        temperature=1 and forbids forced tool_choice (must be 'auto'), and
+        max_tokens must exceed the thinking budget — so we trade strict
+        determinism for reasoning. With thinking OFF we keep the low-temp + forced
+        tool call for reproducibility."""
+        budget = _ANTHROPIC_THINK_BUDGET.get(SETTINGS.reasoning_effort, 0)
+        if budget:
+            return {
+                "thinking": {"type": "enabled", "budget_tokens": budget},
+                "temperature": 1.0,
+                "max_tokens": SETTINGS.max_decision_tokens + budget,
+                "tool_choice": {"type": "auto"},
+            }
+        return {
+            "temperature": SETTINGS.decision_temperature,
+            "max_tokens": SETTINGS.max_decision_tokens,
+            "tool_choice": forced_choice,
+        }
+
     def structured_call(self, system: str, user: str, tool: dict) -> dict:
         resp = self.client.messages.create(
             model=SETTINGS.decision_model,
-            max_tokens=SETTINGS.max_decision_tokens,
-            temperature=SETTINGS.decision_temperature,
             system=system,
             tools=[tool],
-            tool_choice={"type": "tool", "name": tool["name"]},
             messages=[{"role": "user", "content": user}],
+            **self._tuning({"type": "tool", "name": tool["name"]}),
         )
         for block in resp.content:
             if getattr(block, "type", None) == "tool_use" and block.name == tool["name"]:
@@ -75,12 +98,10 @@ class AnthropicClient:
         for _ in range(max_iters):
             resp = self.client.messages.create(
                 model=SETTINGS.decision_model,
-                max_tokens=SETTINGS.max_decision_tokens,
-                temperature=SETTINGS.decision_temperature,
                 system=system,
                 tools=tools,
-                tool_choice={"type": "any"},
                 messages=messages,
+                **self._tuning({"type": "any"}),
             )
             messages.append({"role": "assistant", "content": resp.content})
             tool_results = []
@@ -113,24 +134,43 @@ class OpenAIClient:
             timeout=SETTINGS.llm_timeout,
             max_retries=SETTINGS.llm_max_retries,
         )
-        # Some reasoning models reject temperature/seed — disable after a 400 so we
-        # don't retry on every call for the rest of the process.
+        # Some reasoning models reject temperature/seed; some non-reasoning models
+        # reject reasoning_effort. Each flag is disabled after a 400 names it, so we
+        # don't keep sending an unsupported param for the rest of the process.
         self._sampling = True
+        self._reasoning = True
 
     def _create(self, **kwargs):
-        """chat.completions.create with low temperature + fixed seed for
-        reproducibility, falling back to provider defaults if the model rejects them."""
-        if self._sampling:
-            extra = {"temperature": SETTINGS.decision_temperature}
-            if SETTINGS.decision_seed is not None:
-                extra["seed"] = SETTINGS.decision_seed
+        """chat.completions.create adding low-temp+seed (reproducibility) and
+        reasoning_effort (think harder), each stripped and retried if the model
+        rejects it. Reasoning models typically drop the former; classic chat models
+        drop the latter."""
+        # Reasoning tokens are charged against max_completion_tokens, so give the
+        # model headroom to think AND still emit the tool call (else it can burn the
+        # budget reasoning and return no tool_calls).
+        if (self._reasoning and SETTINGS.reasoning_effort != "off"
+                and "max_completion_tokens" in kwargs):
+            kwargs = {**kwargs, "max_completion_tokens": kwargs["max_completion_tokens"] + 16_000}
+        for _ in range(3):  # at most a couple of param-strip retries
+            extra: dict = {}
+            if self._sampling:
+                extra["temperature"] = SETTINGS.decision_temperature
+                if SETTINGS.decision_seed is not None:
+                    extra["seed"] = SETTINGS.decision_seed
+            if self._reasoning and SETTINGS.reasoning_effort != "off":
+                extra["reasoning_effort"] = SETTINGS.reasoning_effort
             try:
                 return self.client.chat.completions.create(**kwargs, **extra)
             except Exception as e:
                 msg = str(e).lower()
-                if any(w in msg for w in ("temperature", "seed", "unsupported", "not support")):
-                    self._sampling = False  # reasoning model: stop trying
-                else:
+                changed = False
+                if self._sampling and any(w in msg for w in ("temperature", "seed", "sampling")):
+                    self._sampling = False
+                    changed = True
+                if self._reasoning and "reasoning" in msg:
+                    self._reasoning = False
+                    changed = True
+                if not changed:
                     raise
         return self.client.chat.completions.create(**kwargs)
 
@@ -213,6 +253,19 @@ class GeminiClient:
         self.genai = genai
         self.client = genai.Client(api_key=SETTINGS.gemini_api_key)
 
+    def _thinking(self):
+        """A ThinkingConfig with a budget for the chosen effort, or None ('off' →
+        the model's default)."""
+        budget = _GEMINI_THINK_BUDGET.get(SETTINGS.reasoning_effort, 0)
+        if not budget:
+            return None
+        from google.genai import types
+
+        try:
+            return types.ThinkingConfig(thinking_budget=budget)
+        except Exception:
+            return None  # older SDK without thinking support → use default
+
     def structured_call(self, system: str, user: str, tool: dict) -> dict:
         from google.genai import types
 
@@ -226,6 +279,7 @@ class GeminiClient:
             max_output_tokens=SETTINGS.max_decision_tokens,
             temperature=SETTINGS.decision_temperature,
             seed=SETTINGS.decision_seed,
+            thinking_config=self._thinking(),
             tools=[types.Tool(function_declarations=[fn])],
             tool_config=types.ToolConfig(
                 function_calling_config=types.FunctionCallingConfig(
@@ -260,6 +314,7 @@ class GeminiClient:
             max_output_tokens=SETTINGS.max_decision_tokens,
             temperature=SETTINGS.decision_temperature,
             seed=SETTINGS.decision_seed,
+            thinking_config=self._thinking(),
             tools=[types.Tool(function_declarations=decls)],
             tool_config=types.ToolConfig(
                 function_calling_config=types.FunctionCallingConfig(mode="ANY")
