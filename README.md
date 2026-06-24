@@ -256,7 +256,27 @@ uv run aib valuate CRM NOW           # force a valuation on specific tickers (an
 uv run aib valuate NVDA --full       # full-agent take incl. the PM's verdict (curiosity)
 uv run aib opportunities             # the market-wide board: every name ever valued
 uv run aib opportunities --buys --sector Tech --csv board.csv   # filter + export
+uv run aib serve                     # launch the web dashboard + read API
 ```
+
+### Web dashboard
+
+`uv run aib serve` starts a FastAPI server with a self-contained browser UI at
+`http://127.0.0.1:8000/` (no build step, no Node). Four pages:
+
+- **Portfolio** — NAV, return vs the S&P 500 / Nasdaq 100, an allocation donut,
+  the holdings table (marked to live prices, with unrealized P&L), and the full
+  trade ledger.
+- **Opportunities** — the market-wide board, sortable/filterable, ranked by
+  risk-adjusted score. Click any row to open the company.
+- **Company** — search a ticker and see everything we have on it: valuation,
+  fair value, entry point, margin of safety, risk/reward, structural risk, the
+  bull/bear cases, mispricing thesis, news, predictions, and your notes.
+- **Analyze** — kick off a fresh full valuation of any ticker (runs the analyst
+  pipeline in the background); it then becomes searchable on the Company page.
+
+It binds to localhost by default; pass `--host 0.0.0.0` to expose it and set
+`AIB_API_CORS_ORIGINS` to lock down CORS. Interactive API docs live at `/docs`.
 
 Run `aib run` once per day (manually for now). When you trust it, it can be
 scheduled to run automatically.

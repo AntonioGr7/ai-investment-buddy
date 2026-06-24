@@ -13,9 +13,12 @@ from dataclasses import asdict
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 
+from ..config import DATA_DIR, SETTINGS
+from ..engine.benchmark import compute_returns
 from ..memory import db
 from ..memory import predictions as P
 from ..memory import radar as rad
+from ..memory import store
 from ..memory import valuations as v
 from ..models import ValuationRecord
 from .jobs import all_jobs, get_job, start_valuation
@@ -76,6 +79,118 @@ def health() -> dict:
         "predictions": npred,
         "full_text_search": db._has_fts.get(str(db._db_path()), False),
     }
+
+
+# --- Portfolio (holdings, allocation, performance) ---------------------------
+def _held_prices(pf) -> dict[str, float]:
+    """Best-effort current prices for held tickers (mirrors the CLI status view)."""
+    if not pf.positions:
+        return {}
+    from ..data import get_providers
+
+    providers = get_providers()
+    prices: dict[str, float] = {}
+    try:
+        hist = providers.prices.history(list(pf.positions.keys()), lookback_days=10)
+        for t, df in hist.items():
+            if df is not None and not df.empty and "Close" in df:
+                prices[t] = float(df["Close"].dropna().iloc[-1])
+    except Exception:
+        pass
+    for t in pf.positions:
+        if t not in prices:
+            try:
+                px = providers.prices.latest_price(t)
+                if px:
+                    prices[t] = px
+            except Exception:
+                continue
+    return prices
+
+
+def _benchmark_levels() -> dict[str, float]:
+    from ..data import get_providers
+
+    try:
+        macro = get_providers().macro.snapshot()
+    except Exception:
+        return {}
+    return {
+        label: macro.indicators[label]
+        for label in SETTINGS.benchmarks
+        if label in macro.indicators
+    }
+
+
+@app.get("/portfolio")
+def portfolio() -> dict:
+    """Current book: cash + marked-to-market positions, allocation weights,
+    realized vs benchmark performance from inception. Fetches live prices, so
+    this call can take a few seconds."""
+    if not store.is_initialized():
+        raise HTTPException(status_code=404, detail="No portfolio. Run `aib init` first.")
+    pf = store.load_portfolio()
+    prices = _held_prices(pf)
+    nav = pf.nav(prices)
+    invested = pf.invested_value(prices)
+
+    positions = []
+    for t, pos in pf.positions.items():
+        px = prices.get(t)
+        mv = pos.market_value(px) if px is not None else None
+        pnl = pos.unrealized_pnl(px) if px is not None else None
+        cost = pos.avg_cost * pos.shares
+        positions.append({
+            "ticker": t,
+            "shares": pos.shares,
+            "avg_cost": pos.avg_cost,
+            "price": px,
+            "value": mv,
+            "weight": (mv / nav) if (mv is not None and nav > 0) else None,
+            "unrealized_pnl": pnl,
+            "unrealized_pnl_pct": ((px / pos.avg_cost - 1) * 100) if px and pos.avg_cost else None,
+            "cost_basis": cost,
+        })
+    positions.sort(key=lambda p: (p["value"] is not None, p["value"] or 0), reverse=True)
+
+    benchmarks = _benchmark_levels()
+    nav_history = store.load_nav_history()
+    returns = compute_returns(nav_history, nav, benchmarks)
+    exp = store.load_experiment() or {}
+
+    return {
+        "cash": pf.cash,
+        "invested": invested,
+        "nav": nav,
+        "n_positions": len(pf.positions),
+        "cash_weight": (pf.cash / nav) if nav > 0 else 1.0,
+        "starting_capital": SETTINGS.starting_capital,
+        "positions": positions,
+        "returns": returns,
+        "benchmarks": list(SETTINGS.benchmarks.keys()),
+        "experiment": exp,
+        "data_dir": str(DATA_DIR),
+        "runs_recorded": len(nav_history),
+    }
+
+
+@app.get("/trades")
+def trades(limit: int = Query(0, ge=0, description="0 = all."), ticker: str | None = None) -> dict:
+    """The append-only paper trade ledger, most recent first."""
+    rows = store.load_trades()
+    if ticker:
+        rows = [t for t in rows if t.ticker.upper() == ticker.upper()]
+    rows = list(reversed(rows))
+    total = len(rows)
+    if limit:
+        rows = rows[:limit]
+    return {"total": total, "trades": rows}
+
+
+@app.get("/nav_history")
+def nav_history() -> dict:
+    """Raw NAV + benchmark levels per recorded run (for the equity curve)."""
+    return {"rows": store.load_nav_history(), "benchmarks": list(SETTINGS.benchmarks.keys())}
 
 
 # --- The board (every name we've valued, ranked) -----------------------------
@@ -184,3 +299,15 @@ def job_status(job_id: str) -> dict:
 @app.get("/jobs")
 def jobs() -> dict:
     return {"jobs": [j.to_dict() for j in all_jobs()]}
+
+
+# --- Static frontend (served at /) -------------------------------------------
+# The single-page UI lives next to this module. Mounted last so it never shadows
+# the JSON API routes above.
+from pathlib import Path as _Path  # noqa: E402
+
+from fastapi.staticfiles import StaticFiles  # noqa: E402
+
+_STATIC_DIR = _Path(__file__).parent / "static"
+if _STATIC_DIR.is_dir():
+    app.mount("/", StaticFiles(directory=str(_STATIC_DIR), html=True), name="ui")

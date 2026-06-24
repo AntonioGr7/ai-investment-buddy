@@ -611,12 +611,14 @@ def serve(
     port: int = typer.Option(8000, help="Port."),
     reload: bool = typer.Option(False, "--reload", help="Auto-reload on code changes (dev)."),
 ):
-    """Serve the read API (board, radar, company, thesis search, predictions) plus
-    the on-demand POST /valuate/{ticker} trigger. Interactive docs at /docs."""
+    """Serve the web UI + read API (portfolio, board, company, thesis search,
+    predictions) plus the on-demand POST /valuate/{ticker} trigger. The browser
+    dashboard is at /, interactive API docs at /docs."""
     import uvicorn
 
     console.print(
-        f"[green]Serving API[/green] at http://{host}:{port}  ·  docs: http://{host}:{port}/docs"
+        f"[green]Serving[/green] dashboard at http://{host}:{port}/  ·  "
+        f"API docs: http://{host}:{port}/docs"
     )
     uvicorn.run("ai_investment_buddy.api.app:app", host=host, port=port, reload=reload)
 

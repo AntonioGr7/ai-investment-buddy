@@ -1,0 +1,568 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>AI Investment Buddy</title>
+<style>
+  :root{
+    --bg:#0c0e12; --panel:#14181f; --panel2:#1b212b; --line:#262d39;
+    --ink:#e6eaf0; --muted:#8a94a6; --faint:#5b6678;
+    --accent:#5b9dff; --accent2:#7c5cff;
+    --green:#3fcf8e; --red:#f0616d; --amber:#f2b54a;
+    --mono:"SF Mono",ui-monospace,"JetBrains Mono",Menlo,Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,system-ui,sans-serif;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--sans);
+    font-size:14px;line-height:1.5;-webkit-font-smoothing:antialiased}
+  a{color:var(--accent);text-decoration:none}
+  .mono{font-family:var(--mono);font-variant-numeric:tabular-nums}
+  .num{font-family:var(--mono);font-variant-numeric:tabular-nums}
+  .pos{color:var(--green)} .neg{color:var(--red)} .muted{color:var(--muted)}
+
+  /* layout */
+  header{position:sticky;top:0;z-index:20;background:rgba(12,14,18,.85);
+    backdrop-filter:blur(12px);border-bottom:1px solid var(--line)}
+  .bar{max-width:1240px;margin:0 auto;display:flex;align-items:center;gap:28px;
+    padding:14px 24px}
+  .brand{display:flex;align-items:center;gap:10px;font-weight:600;letter-spacing:-.01em}
+  .brand .dot{width:11px;height:11px;border-radius:3px;
+    background:linear-gradient(135deg,var(--accent),var(--accent2))}
+  .brand small{color:var(--faint);font-weight:400;margin-left:2px}
+  nav{display:flex;gap:4px;margin-left:auto}
+  nav button{background:none;border:none;color:var(--muted);font:inherit;
+    padding:8px 14px;border-radius:8px;cursor:pointer;transition:.15s}
+  nav button:hover{color:var(--ink);background:var(--panel)}
+  nav button.active{color:var(--ink);background:var(--panel2)}
+  main{max-width:1240px;margin:0 auto;padding:28px 24px 80px}
+  .view{display:none;animation:fade .25s ease}
+  .view.active{display:block}
+  @keyframes fade{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+
+  h1{font-size:20px;font-weight:600;margin:0 0 2px;letter-spacing:-.01em}
+  h2{font-size:15px;font-weight:600;margin:0 0 14px;letter-spacing:-.01em}
+  .sub{color:var(--muted);font-size:13px;margin:0 0 24px}
+
+  /* cards */
+  .grid{display:grid;gap:16px}
+  .kpis{grid-template-columns:repeat(auto-fit,minmax(180px,1fr));margin-bottom:24px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:18px}
+  .kpi .label{color:var(--faint);font-size:12px;text-transform:uppercase;letter-spacing:.06em}
+  .kpi .val{font-size:26px;font-weight:600;margin-top:6px;letter-spacing:-.02em}
+  .kpi .delta{font-size:13px;margin-top:3px}
+
+  /* tables */
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th{text-align:right;color:var(--faint);font-weight:500;font-size:11px;
+    text-transform:uppercase;letter-spacing:.05em;padding:0 12px 10px;
+    border-bottom:1px solid var(--line);white-space:nowrap;cursor:default}
+  th:first-child,td:first-child{text-align:left;padding-left:4px}
+  th.sortable{cursor:pointer;user-select:none}
+  th.sortable:hover{color:var(--muted)}
+  td{text-align:right;padding:11px 12px;border-bottom:1px solid var(--line)}
+  tbody tr{transition:.12s}
+  tbody tr:hover{background:var(--panel2)}
+  tbody tr.clickable{cursor:pointer}
+  .ticker{font-weight:600;font-family:var(--mono)}
+  .scroll{overflow-x:auto;-webkit-overflow-scrolling:touch}
+
+  /* pills */
+  .pill{display:inline-block;padding:2px 9px;border-radius:999px;font-size:11px;
+    font-weight:600;letter-spacing:.02em;white-space:nowrap}
+  .pill.buy,.pill.add{background:rgba(63,207,142,.14);color:var(--green)}
+  .pill.hold,.pill.watch{background:rgba(91,157,255,.14);color:var(--accent)}
+  .pill.trim,.pill.sell,.pill.avoid{background:rgba(240,97,109,.14);color:var(--red)}
+  .pill.neutral{background:var(--panel2);color:var(--muted)}
+  .pill.over{background:rgba(63,207,142,.14);color:var(--green)}
+  .pill.under{background:rgba(240,97,109,.14);color:var(--red)}
+  .risk-LOW{color:var(--green)} .risk-MEDIUM{color:var(--amber)}
+  .risk-HIGH{color:var(--red)} .risk-SEVERE{color:var(--red);font-weight:700}
+  .es-TRIGGERED{color:var(--green);font-weight:600}
+  .es-APPROACHING{color:var(--amber)} .es-FAR{color:var(--faint)}
+
+  /* inputs */
+  .search{display:flex;gap:10px;margin-bottom:24px;max-width:520px}
+  input[type=text]{flex:1;background:var(--panel);border:1px solid var(--line);
+    color:var(--ink);font:inherit;padding:12px 16px;border-radius:10px;outline:none;
+    text-transform:uppercase;letter-spacing:.04em;font-family:var(--mono)}
+  input::placeholder{color:var(--faint);text-transform:none;letter-spacing:0;font-family:var(--sans)}
+  input:focus{border-color:var(--accent)}
+  button.btn{background:var(--accent);color:#06101f;border:none;font:inherit;
+    font-weight:600;padding:12px 22px;border-radius:10px;cursor:pointer;transition:.15s}
+  button.btn:hover{filter:brightness(1.08)}
+  button.btn:disabled{opacity:.5;cursor:not-allowed}
+  button.btn.ghost{background:var(--panel2);color:var(--ink);border:1px solid var(--line)}
+  .filters{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:18px;align-items:center}
+  .filters input,.filters select{background:var(--panel);border:1px solid var(--line);
+    color:var(--ink);font:inherit;padding:8px 12px;border-radius:8px;outline:none}
+  .chip{background:var(--panel2);border:1px solid var(--line);color:var(--muted);
+    padding:7px 13px;border-radius:8px;cursor:pointer;font-size:13px;transition:.12s}
+  .chip.on{background:rgba(91,157,255,.16);border-color:var(--accent);color:var(--accent)}
+
+  /* states */
+  .empty,.loading{text-align:center;color:var(--faint);padding:60px 20px}
+  .spinner{width:22px;height:22px;border:2.5px solid var(--line);
+    border-top-color:var(--accent);border-radius:50%;animation:spin .7s linear infinite;
+    display:inline-block;vertical-align:-5px;margin-right:10px}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  .err{background:rgba(240,97,109,.1);border:1px solid rgba(240,97,109,.3);
+    color:#ffb3ba;padding:14px 16px;border-radius:10px}
+
+  /* company detail */
+  .detail-head{display:flex;align-items:flex-start;gap:16px;flex-wrap:wrap;margin-bottom:20px}
+  .detail-head .tk{font-size:30px;font-weight:700;font-family:var(--mono);letter-spacing:-.02em}
+  .detail-head .meta{color:var(--muted);font-size:13px}
+  .badges{display:flex;gap:8px;flex-wrap:wrap;margin-left:auto;align-items:center}
+  .valgrid{grid-template-columns:repeat(auto-fit,minmax(150px,1fr));margin-bottom:22px}
+  .stat{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px 16px}
+  .stat .l{color:var(--faint);font-size:11px;text-transform:uppercase;letter-spacing:.05em}
+  .stat .v{font-size:20px;font-weight:600;margin-top:5px;font-family:var(--mono)}
+  .prose{display:grid;gap:14px;grid-template-columns:1fr 1fr}
+  .prose .block{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px}
+  .prose .block.full{grid-column:1/-1}
+  .prose h3{margin:0 0 8px;font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--faint)}
+  .prose .block.bull h3{color:var(--green)} .prose .block.bear h3{color:var(--red)}
+  .prose p{margin:0;color:#cfd6e2;font-size:13.5px;line-height:1.6}
+
+  /* allocation */
+  .alloc{display:grid;grid-template-columns:300px 1fr;gap:24px;align-items:center}
+  .legend{display:flex;flex-direction:column;gap:8px}
+  .legend .row{display:flex;align-items:center;gap:10px;font-size:13px}
+  .legend .sw{width:11px;height:11px;border-radius:3px;flex:none}
+  .legend .lt{font-family:var(--mono);font-weight:600}
+  .legend .lw{margin-left:auto;color:var(--muted);font-family:var(--mono)}
+  @media(max-width:760px){.alloc{grid-template-columns:1fr}.prose{grid-template-columns:1fr}
+    .bar{gap:12px;padding:12px 16px}.brand small{display:none}main{padding:20px 14px 60px}}
+</style>
+</head>
+<body>
+<header>
+  <div class="bar">
+    <div class="brand"><span class="dot"></span>AI Investment Buddy <small id="expLabel"></small></div>
+    <nav>
+      <button data-view="portfolio" class="active">Portfolio</button>
+      <button data-view="opportunities">Opportunities</button>
+      <button data-view="search">Company</button>
+      <button data-view="analyze">Analyze</button>
+    </nav>
+  </div>
+</header>
+
+<main>
+  <!-- PORTFOLIO -->
+  <section class="view active" id="view-portfolio">
+    <h1>Portfolio</h1>
+    <p class="sub" id="pfMeta">Paper portfolio marked to live prices.</p>
+    <div id="pfBody"><div class="loading"><span class="spinner"></span>Loading portfolio…</div></div>
+  </section>
+
+  <!-- OPPORTUNITIES -->
+  <section class="view" id="view-opportunities">
+    <h1>Opportunities</h1>
+    <p class="sub">Every name we've ever valued, ranked by risk-adjusted attractiveness.</p>
+    <div class="filters">
+      <span class="chip" id="fBuys">Buys / Adds only</span>
+      <span class="chip" id="fTrig">Entry triggered</span>
+      <input type="text" id="fSector" placeholder="Filter sector…" style="text-transform:none;font-family:var(--sans)" />
+      <input type="text" id="fMinUp" placeholder="Min upside %" style="width:120px;text-transform:none;font-family:var(--sans)" />
+    </div>
+    <div class="card scroll" id="boardBody"><div class="loading"><span class="spinner"></span>Loading board…</div></div>
+  </section>
+
+  <!-- COMPANY SEARCH -->
+  <section class="view" id="view-search">
+    <h1>Company</h1>
+    <p class="sub">Look up a name we've already valued — the full thesis, valuation, and entry.</p>
+    <div class="search">
+      <input type="text" id="searchInput" placeholder="Ticker, e.g. NVDA" autocomplete="off" />
+      <button class="btn" id="searchBtn">Look up</button>
+    </div>
+    <div id="companyBody"></div>
+  </section>
+
+  <!-- ANALYZE -->
+  <section class="view" id="view-analyze">
+    <h1>Run analysis</h1>
+    <p class="sub">Kick off a fresh full valuation of any ticker. It joins the corpus and becomes searchable above.</p>
+    <div class="search">
+      <input type="text" id="analyzeInput" placeholder="Ticker, e.g. CRM" autocomplete="off" />
+      <button class="btn" id="analyzeBtn">Analyze</button>
+    </div>
+    <div id="analyzeBody"></div>
+    <div id="jobsBody" style="margin-top:28px"></div>
+  </section>
+</main>
+
+<script>
+const API = location.origin;
+const $ = s => document.querySelector(s);
+const PALETTE = ["#5b9dff","#7c5cff","#3fcf8e","#f2b54a","#f0616d","#4ec8d4",
+  "#c98bff","#ff9d5c","#8ad36b","#ff7aa8","#6fb1ff","#d4b24e"];
+
+// ---- helpers ----
+const fmtUsd = (v,d=0)=> v==null ? "—" : "$"+Number(v).toLocaleString("en-US",{minimumFractionDigits:d,maximumFractionDigits:d});
+const fmtPct = (v,d=1)=> v==null ? "—" : (v>=0?"+":"")+Number(v).toFixed(d)+"%";
+const fmtNum = (v,d=2)=> v==null ? "—" : Number(v).toFixed(d);
+const cls = v => v==null ? "" : v>=0 ? "pos" : "neg";
+const esc = s => (s==null?"":String(s)).replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));
+async function api(path,opts){ const r=await fetch(API+path,opts); if(!r.ok){let m;try{m=(await r.json()).detail}catch(e){m=r.statusText} throw new Error(m||("HTTP "+r.status));} return r.json(); }
+function recPill(r){ if(!r) return ""; const k=r.toLowerCase(); return `<span class="pill ${k}">${esc(r)}</span>`; }
+function mvPill(v){ if(!v) return ""; const k=v.startsWith("OVER")?"over":v.startsWith("UNDER")?"under":"neutral"; return `<span class="pill ${k}">${esc(v)}</span>`; }
+
+// ---- routing ----
+document.querySelectorAll("nav button").forEach(b=>b.onclick=()=>{
+  document.querySelectorAll("nav button").forEach(x=>x.classList.toggle("active",x===b));
+  document.querySelectorAll(".view").forEach(v=>v.classList.remove("active"));
+  $("#view-"+b.dataset.view).classList.add("active");
+  if(b.dataset.view==="portfolio") loadPortfolio();
+  if(b.dataset.view==="opportunities") loadBoard();
+  if(b.dataset.view==="analyze") loadJobs();
+});
+
+// ===================== PORTFOLIO =====================
+let pfLoaded=false;
+async function loadPortfolio(force){
+  if(pfLoaded && !force) return;
+  pfLoaded=true;
+  const body=$("#pfBody");
+  body.innerHTML=`<div class="loading"><span class="spinner"></span>Fetching live prices…</div>`;
+  try{
+    const d=await api("/portfolio");
+    renderPortfolio(d);
+  }catch(e){ body.innerHTML=`<div class="err">${esc(e.message)}</div>`; pfLoaded=false; }
+}
+
+function renderPortfolio(d){
+  const exp=d.experiment||{};
+  $("#expLabel").textContent = exp.provider ? `· ${exp.provider}` : "";
+  $("#pfMeta").textContent =
+    `${exp.model?exp.model+" · ":""}${d.runs_recorded} runs recorded · since inception ${fmtUsd(d.starting_capital)}`;
+
+  const pfRet=d.returns.Portfolio;
+  let kpis=`
+    <div class="card kpi"><div class="label">Net asset value</div>
+      <div class="val num">${fmtUsd(d.nav)}</div>
+      <div class="delta ${cls(pfRet)}">${fmtPct(pfRet,2)} since inception</div></div>
+    <div class="card kpi"><div class="label">Cash</div>
+      <div class="val num">${fmtUsd(d.cash)}</div>
+      <div class="delta muted">${(d.cash_weight*100).toFixed(1)}% of book</div></div>
+    <div class="card kpi"><div class="label">Invested</div>
+      <div class="val num">${fmtUsd(d.invested)}</div>
+      <div class="delta muted">${d.n_positions} position${d.n_positions===1?"":"s"}</div></div>`;
+  for(const b of d.benchmarks){
+    const br=d.returns[b]; const rel = pfRet!=null && br!=null ? pfRet-br : null;
+    kpis+=`<div class="card kpi"><div class="label">vs ${esc(b)}</div>
+      <div class="val num ${cls(rel)}">${fmtPct(rel,2)}</div>
+      <div class="delta muted">${esc(b)} ${fmtPct(br,2)}</div></div>`;
+  }
+
+  const held=d.positions.filter(p=>p.value!=null);
+  const alloc = held.map((p,i)=>({label:p.ticker,weight:p.weight||0,color:PALETTE[i%PALETTE.length]}));
+  alloc.push({label:"CASH",weight:d.cash_weight,color:"#39414f"});
+
+  let rows = d.positions.map(p=>`
+    <tr>
+      <td><span class="ticker">${esc(p.ticker)}</span></td>
+      <td class="num">${fmtNum(p.shares)}</td>
+      <td class="num">${fmtUsd(p.avg_cost,2)}</td>
+      <td class="num">${fmtUsd(p.price,2)}</td>
+      <td class="num">${fmtUsd(p.value)}</td>
+      <td class="num">${p.weight!=null?(p.weight*100).toFixed(1)+"%":"—"}</td>
+      <td class="num ${cls(p.unrealized_pnl)}">${fmtUsd(p.unrealized_pnl)}</td>
+      <td class="num ${cls(p.unrealized_pnl_pct)}">${fmtPct(p.unrealized_pnl_pct)}</td>
+    </tr>`).join("");
+  if(!d.positions.length) rows=`<tr><td colspan="8" class="muted" style="text-align:center;padding:24px">All cash — no positions yet.</td></tr>`;
+
+  $("#pfBody").innerHTML=`
+    <div class="grid kpis">${kpis}</div>
+    <div class="card" style="margin-bottom:16px">
+      <h2>Allocation</h2>
+      <div class="alloc">
+        <div>${pie(alloc)}</div>
+        <div class="legend">${alloc.filter(a=>a.weight>0.0005).map(a=>`
+          <div class="row"><span class="sw" style="background:${a.color}"></span>
+          <span class="lt">${esc(a.label)}</span>
+          <span class="lw">${(a.weight*100).toFixed(1)}%</span></div>`).join("")}</div>
+      </div>
+    </div>
+    <div class="card" style="margin-bottom:16px">
+      <h2>Holdings</h2>
+      <div class="scroll"><table><thead><tr>
+        <th>Ticker</th><th>Shares</th><th>Avg cost</th><th>Price</th><th>Value</th>
+        <th>Weight</th><th>Unrl P&amp;L</th><th>P&amp;L %</th>
+      </tr></thead><tbody>${rows}</tbody></table></div>
+    </div>
+    <div class="card"><h2>Operations</h2><div id="tradesBox" class="scroll">
+      <div class="loading"><span class="spinner"></span>Loading trades…</div></div></div>`;
+
+  d.positions.forEach((p,i)=>{ /* nothing — table not clickable here */ });
+  loadTrades();
+}
+
+async function loadTrades(){
+  try{
+    const d=await api("/trades");
+    const box=$("#tradesBox");
+    if(!d.trades.length){ box.innerHTML=`<div class="muted" style="padding:8px">No trades executed yet.</div>`; return; }
+    box.innerHTML=`<table><thead><tr>
+      <th>Date</th><th>Ticker</th><th>Action</th><th>Shares</th><th>Price</th><th>Value</th><th style="text-align:left">Rationale</th>
+    </tr></thead><tbody>${d.trades.map(t=>`
+      <tr>
+        <td class="num muted">${esc((t.timestamp||"").slice(0,10))}</td>
+        <td><span class="ticker">${esc(t.ticker)}</span></td>
+        <td>${recPill(t.action)}</td>
+        <td class="num">${fmtNum(t.shares)}</td>
+        <td class="num">${fmtUsd(t.price,2)}</td>
+        <td class="num">${fmtUsd(t.value)}</td>
+        <td style="text-align:left;max-width:340px;white-space:normal" class="muted">${esc(t.rationale||"")}</td>
+      </tr>`).join("")}</tbody></table>`;
+  }catch(e){ $("#tradesBox").innerHTML=`<div class="err">${esc(e.message)}</div>`; }
+}
+
+// SVG donut pie
+function pie(slices){
+  const data=slices.filter(s=>s.weight>0.0005);
+  const total=data.reduce((a,b)=>a+b.weight,0)||1;
+  const R=120,r=72,cx=140,cy=140; let ang=-Math.PI/2; let paths="";
+  if(data.length===1){
+    paths=`<circle cx="${cx}" cy="${cy}" r="${(R+r)/2}" fill="none"
+      stroke="${data[0].color}" stroke-width="${R-r}"/>`;
+  } else {
+    for(const s of data){
+      const frac=s.weight/total, a2=ang+frac*2*Math.PI;
+      const large=frac>0.5?1:0;
+      const x1=cx+R*Math.cos(ang),y1=cy+R*Math.sin(ang);
+      const x2=cx+R*Math.cos(a2),y2=cy+R*Math.sin(a2);
+      const xi2=cx+r*Math.cos(a2),yi2=cy+r*Math.sin(a2);
+      const xi1=cx+r*Math.cos(ang),yi1=cy+r*Math.sin(ang);
+      paths+=`<path d="M${x1} ${y1} A${R} ${R} 0 ${large} 1 ${x2} ${y2}
+        L${xi2} ${yi2} A${r} ${r} 0 ${large} 0 ${xi1} ${yi1} Z"
+        fill="${s.color}"><title>${esc(s.label)} ${(s.weight*100).toFixed(1)}%</title></path>`;
+      ang=a2;
+    }
+  }
+  return `<svg viewBox="0 0 280 280" width="260" height="260" style="max-width:100%">
+    ${paths}
+    <text x="${cx}" y="${cy-6}" text-anchor="middle" fill="#8a94a6" font-size="12"
+      font-family="var(--sans)">Positions</text>
+    <text x="${cx}" y="${cy+16}" text-anchor="middle" fill="#e6eaf0" font-size="22"
+      font-weight="600" font-family="var(--mono)">${data.length-1>=0?data.filter(d=>d.label!=="CASH").length:0}</text>
+  </svg>`;
+}
+
+// ===================== OPPORTUNITIES =====================
+let board=[], boardSort={key:"score",dir:-1};
+const fState={buys:false,trig:false};
+async function loadBoard(force){
+  if(board.length && !force) { renderBoard(); return; }
+  const body=$("#boardBody");
+  body.innerHTML=`<div class="loading"><span class="spinner"></span>Loading board…</div>`;
+  try{ const d=await api("/board?limit=0"); board=d.rows; renderBoard(); }
+  catch(e){ body.innerHTML=`<div class="err">${esc(e.message)}</div>`; }
+}
+$("#fBuys").onclick=function(){fState.buys=!fState.buys;this.classList.toggle("on",fState.buys);renderBoard();};
+$("#fTrig").onclick=function(){fState.trig=!fState.trig;this.classList.toggle("on",fState.trig);renderBoard();};
+$("#fSector").oninput=renderBoard; $("#fMinUp").oninput=renderBoard;
+
+function renderBoard(){
+  let rows=board.slice();
+  if(fState.buys) rows=rows.filter(r=>["BUY","ADD"].includes(r.recommendation));
+  if(fState.trig) rows=rows.filter(r=>r.entry_status==="TRIGGERED");
+  const sec=$("#fSector").value.trim().toLowerCase();
+  if(sec) rows=rows.filter(r=>(r.sector||"").toLowerCase().includes(sec));
+  const mu=parseFloat($("#fMinUp").value);
+  if(!isNaN(mu)) rows=rows.filter(r=>r.upside_pct!=null && r.upside_pct>=mu);
+  const {key,dir}=boardSort;
+  rows.sort((a,b)=>{const x=a[key],y=b[key];
+    if(x==null)return 1; if(y==null)return -1;
+    if(typeof x==="string")return x.localeCompare(y)*dir;
+    return (x-y)*dir;});
+
+  if(!rows.length){ $("#boardBody").innerHTML=`<div class="empty">No names match these filters.</div>`; return; }
+  const cols=[["score","Score"],["ticker","Ticker"],["sector","Sector"],["recommendation","Rec"],
+    ["market_view","Market"],["current_price","Price"],["fair_value","Fair"],
+    ["entry_price","Entry"],["entry_status","Status"],["upside_pct","Upside"],
+    ["downside_pct","Down"],["risk_reward","R/R"],["structural_risk","Risk"],["confidence","Conf"]];
+  $("#boardBody").innerHTML=`<table><thead><tr>${cols.map(([k,l])=>
+    `<th class="sortable" data-k="${k}">${l}${boardSort.key===k?(dir<0?" ↓":" ↑"):""}</th>`).join("")}
+    </tr></thead><tbody>${rows.map(r=>`
+    <tr class="clickable" data-tk="${esc(r.ticker)}">
+      <td class="num" style="font-weight:600">${r.score>=0?"+":""}${r.score.toFixed(1)}</td>
+      <td><span class="ticker">${esc(r.ticker)}</span></td>
+      <td style="text-align:left" class="muted">${esc(r.sector||"—")}</td>
+      <td>${recPill(r.recommendation)}</td>
+      <td>${mvPill(r.market_view)}</td>
+      <td class="num">${fmtUsd(r.current_price,2)}</td>
+      <td class="num">${fmtUsd(r.fair_value,2)}</td>
+      <td class="num">${fmtUsd(r.entry_price,2)}</td>
+      <td class="es-${esc(r.entry_status)}">${esc(r.entry_status||"—")}</td>
+      <td class="num ${cls(r.upside_pct)}">${fmtPct(r.upside_pct,0)}</td>
+      <td class="num ${cls(r.downside_pct)}">${fmtPct(r.downside_pct,0)}</td>
+      <td class="num">${fmtNum(r.risk_reward,1)}</td>
+      <td class="risk-${esc(r.structural_risk)}">${esc(r.structural_risk||"—")}</td>
+      <td class="num">${r.confidence??"—"}/5</td>
+    </tr>`).join("")}</tbody></table>`;
+  $("#boardBody").querySelectorAll("th.sortable").forEach(th=>th.onclick=()=>{
+    const k=th.dataset.k;
+    if(boardSort.key===k) boardSort.dir*=-1;
+    else boardSort={key:k,dir:(["ticker","sector","recommendation","market_view","structural_risk","entry_status"].includes(k)?1:-1)};
+    renderBoard();
+  });
+  $("#boardBody").querySelectorAll("tr.clickable").forEach(tr=>tr.onclick=()=>openCompany(tr.dataset.tk));
+}
+
+// ===================== COMPANY =====================
+$("#searchBtn").onclick=()=>openCompany($("#searchInput").value);
+$("#searchInput").addEventListener("keydown",e=>{if(e.key==="Enter")openCompany($("#searchInput").value);});
+
+function openCompany(ticker){
+  ticker=(ticker||"").trim().toUpperCase();
+  if(!ticker) return;
+  document.querySelectorAll("nav button").forEach(x=>x.classList.toggle("active",x.dataset.view==="search"));
+  document.querySelectorAll(".view").forEach(v=>v.classList.remove("active"));
+  $("#view-search").classList.add("active");
+  $("#searchInput").value=ticker;
+  loadCompany(ticker);
+}
+
+async function loadCompany(ticker){
+  const body=$("#companyBody");
+  body.innerHTML=`<div class="loading"><span class="spinner"></span>Loading ${esc(ticker)}…</div>`;
+  try{
+    const d=await api("/companies/"+encodeURIComponent(ticker));
+    renderCompany(d);
+  }catch(e){
+    body.innerHTML=`<div class="err">${esc(e.message)}</div>
+      <p class="muted" style="margin-top:14px">No coverage yet? Run a fresh analysis on the
+      <a href="#" onclick="gotoAnalyze('${esc(ticker)}');return false">Analyze</a> tab.</p>`;
+  }
+}
+function gotoAnalyze(tk){
+  document.querySelectorAll("nav button").forEach(x=>x.classList.toggle("active",x.dataset.view==="analyze"));
+  document.querySelectorAll(".view").forEach(v=>v.classList.remove("active"));
+  $("#view-analyze").classList.add("active");
+  if(tk){$("#analyzeInput").value=tk;}
+  loadJobs();
+}
+
+function renderCompany(d){
+  const a=d.record.latest.assessment;
+  const stat=(l,v,c="")=>`<div class="stat"><div class="l">${l}</div><div class="v ${c}">${v}</div></div>`;
+  const blk=(t,v,extra="")=> v ? `<div class="block ${extra}"><h3>${t}</h3><p>${esc(v)}</p></div>` : "";
+
+  let preds="";
+  if(d.predictions && d.predictions.length){
+    preds=`<div class="block full"><h3>Predictions</h3>${d.predictions.map(p=>`
+      <p style="margin-bottom:8px"><strong class="mono">${(p.probability*100).toFixed(0)}%</strong>
+      ${p.market_implied!=null?`<span class="muted">(mkt ${(p.market_implied*100).toFixed(0)}%, edge ${((p.probability-p.market_implied)*100).toFixed(0)}pt)</span>`:""}
+      — ${esc(p.statement)} <span class="muted">[${esc(p.status)}${p.outcome!=null?", "+(p.outcome?"HIT":"MISS"):""}]</span></p>`).join("")}</div>`;
+  }
+
+  $("#companyBody").innerHTML=`
+    <div class="detail-head">
+      <div>
+        <div class="tk">${esc(a.ticker)}</div>
+        <div class="meta">${esc(a.sector||"")}${a.archetype?" · "+esc(a.archetype):""}
+          · ${esc(a.valuation_method||"")} · assessed ${esc(d.record.last_assessed)}</div>
+      </div>
+      <div class="badges">
+        ${recPill(a.recommendation)} ${mvPill(a.market_view)}
+        <span class="pill neutral">${esc(a.valuation_verdict)}</span>
+        <span class="pill neutral">score ${d.opportunity_score>=0?"+":""}${d.opportunity_score.toFixed(1)}</span>
+      </div>
+    </div>
+
+    <div class="grid valgrid">
+      ${stat("Price",fmtUsd(a.current_price,2))}
+      ${stat("Fair value",fmtUsd(a.fair_value,2))}
+      ${stat("Upside",fmtPct(a.upside_pct,0),cls(a.upside_pct))}
+      ${stat("Entry price",fmtUsd(a.entry_price,2))}
+      ${stat("Entry status",`<span class="es-${esc(d.entry_status)}">${esc(d.entry_status)}</span>`)}
+      ${stat("Downside",fmtPct(a.downside_pct,0),cls(a.downside_pct))}
+      ${stat("Risk / reward",fmtNum(a.risk_reward,1))}
+      ${stat("Struct. risk",`<span class="risk-${esc(a.structural_risk)}">${esc(a.structural_risk)}</span>`)}
+      ${stat("Quality",(a.quality_score??"—")+"/5")}
+      ${stat("Conviction",(a.confidence??"—")+"/5")}
+      ${stat("Margin of safety",a.margin_of_safety?'<span class="pos">Yes</span>':'<span class="muted">No</span>')}
+      ${stat("News",a.news_sentiment||"—")}
+    </div>
+
+    <div class="prose">
+      ${blk("Bull case",a.bull_case,"bull")}
+      ${blk("Bear case",a.bear_case,"bear")}
+      ${blk("Mispricing thesis",a.mispricing_thesis,"full")}
+      ${blk("Why the market disagrees",a.why_market_disagrees,"full")}
+      ${blk("Market-implied",a.market_implied)}
+      ${blk("Re-rating catalyst",a.rerating_catalyst)}
+      ${blk("Key risks",a.key_risks,"full")}
+      ${blk("News assessment",a.news_assessment,"full")}
+      ${preds}
+    </div>
+    ${d.record.notes && d.record.notes.length ? `<div class="card" style="margin-top:16px">
+      <h2>Investor notes</h2>${d.record.notes.map(n=>`<p style="margin:0 0 10px"><span class="muted mono">${esc(n.date)}</span> —
+      <strong>${esc(n.stance||"")}</strong> ${esc(n.user_view)}</p>`).join("")}</div>`:""}
+  `;
+}
+
+// ===================== ANALYZE =====================
+$("#analyzeBtn").onclick=triggerAnalysis;
+$("#analyzeInput").addEventListener("keydown",e=>{if(e.key==="Enter")triggerAnalysis();});
+
+async function triggerAnalysis(){
+  const tk=$("#analyzeInput").value.trim().toUpperCase();
+  if(!tk) return;
+  const body=$("#analyzeBody");
+  $("#analyzeBtn").disabled=true;
+  body.innerHTML=`<div class="card"><span class="spinner"></span>Queuing valuation for <b class="mono">${esc(tk)}</b>…</div>`;
+  try{
+    const j=await api("/valuate/"+encodeURIComponent(tk),{method:"POST"});
+    body.innerHTML=`<div class="card">Started job <span class="mono">${esc(j.job_id)}</span> for
+      <b class="mono">${esc(tk)}</b>. This runs the full analyst pipeline (a few minutes).</div>`;
+    pollJob(j.job_id, body, tk);
+    loadJobs();
+  }catch(e){ body.innerHTML=`<div class="err">${esc(e.message)}</div>`; }
+  finally{ $("#analyzeBtn").disabled=false; }
+}
+
+async function pollJob(id, body, tk){
+  try{
+    const j=await api("/jobs/"+id);
+    if(j.status==="done"){
+      board=[]; // invalidate cached board
+      body.innerHTML=`<div class="card"><b class="pos">✓ Done.</b> ${esc(tk)} valued and indexed.
+        <button class="btn" style="margin-left:12px;padding:8px 16px" onclick="openCompany('${esc(tk)}')">View ${esc(tk)}</button></div>`;
+      loadJobs(); return;
+    }
+    if(j.status==="error"){
+      body.innerHTML=`<div class="err"><b>Valuation failed.</b><br><span class="mono" style="font-size:12px">${esc((j.error||"").slice(-600))}</span></div>`;
+      loadJobs(); return;
+    }
+    body.innerHTML=`<div class="card"><span class="spinner"></span>
+      <b class="mono">${esc(tk)}</b> — ${esc(j.status)}… <span class="muted">(polling)</span></div>`;
+    setTimeout(()=>pollJob(id,body,tk),3000);
+  }catch(e){ body.innerHTML=`<div class="err">${esc(e.message)}</div>`; }
+}
+
+async function loadJobs(){
+  try{
+    const d=await api("/jobs");
+    const box=$("#jobsBody");
+    if(!d.jobs.length){ box.innerHTML=""; return; }
+    box.innerHTML=`<h2>Recent jobs</h2><div class="card scroll"><table><thead><tr>
+      <th>Ticker</th><th>Status</th><th>Started</th><th>Finished</th><th></th>
+    </tr></thead><tbody>${d.jobs.map(j=>`<tr>
+      <td><span class="ticker">${esc(j.ticker)}</span></td>
+      <td>${j.status==="done"?'<span class="pos">done</span>':j.status==="error"?'<span class="neg">error</span>':esc(j.status)}</td>
+      <td class="num muted">${esc((j.started_at||"").slice(11,19)||"—")}</td>
+      <td class="num muted">${esc((j.finished_at||"").slice(11,19)||"—")}</td>
+      <td>${j.status==="done"?`<a href="#" onclick="openCompany('${esc(j.ticker)}');return false">view</a>`:""}</td>
+    </tr>`).join("")}</tbody></table></div>`;
+  }catch(e){ /* silent */ }
+}
+
+// init
+loadPortfolio();
+</script>
+</body>
+</html>
