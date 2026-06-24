@@ -809,9 +809,14 @@ def valuate(
     watch: bool = typer.Option(False, "--watch", help="Also add these to your watchlist."),
     full: bool = typer.Option(
         False, "--full", "-f",
-        help="Full-agent treatment: also get the PM's verdict (would it want this, "
-        "and at what size) with regime/sector/portfolio context. A curiosity analysis "
-        "— the agent knows it's investor-picked and nothing is traded.",
+        help="Also PRINT the PM's verdict panels in the terminal (the verdict is "
+        "computed + stored regardless unless --no-verdict).",
+    ),
+    verdict: bool = typer.Option(
+        True, "--verdict/--no-verdict",
+        help="Compute & store the agent's (PM's) point-in-time verdict — would it "
+        "actually buy/add/watch/pass, at what size — alongside the valuation. On by "
+        "default (one extra model call per name); --no-verdict for an analyst-only run.",
     ),
 ):
     """Force a fair-value analysis on specific ticker(s) right now (the analyst stage).
@@ -880,8 +885,8 @@ def valuate(
     for a in results:
         _render_assessment_detail(a)
 
-    if full:
-        _curiosity_verdicts(results, enriched, uni, regime, thesis, positions)
+    if verdict or full:
+        _curiosity_verdicts(results, enriched, uni, regime, thesis, positions, render=full)
 
     console.print("[dim]Stored to data/valuations/. See the full board with [bold]aib opportunities[/bold].[/dim]")
 
@@ -897,7 +902,8 @@ def _render_verdict(ticker: str, v: dict) -> None:
     w = v.get("suggested_weight", 0) or 0
     body = [
         f"[bold]Verdict:[/bold] [{_VERDICT_COLOR.get(verdict,'white')}]{verdict.replace('_',' ')}[/]"
-        f"  ·  would-be weight {w:.0%}",
+        f"  ·  would-be weight {w:.0%}"
+        + ("  ·  [red]would SHORT if permitted[/red]" if v.get("would_short") else ""),
         f"[bold]Sizing:[/bold] {v.get('sizing_rationale','')}",
         f"[bold]Fit with portfolio:[/bold] {v.get('fit_with_portfolio','')}",
         f"[bold]Bottom line:[/bold] {v.get('bottom_line','')}",
@@ -907,17 +913,24 @@ def _render_verdict(ticker: str, v: dict) -> None:
     )
 
 
-def _curiosity_verdicts(results, enriched, uni, regime, thesis, positions) -> None:
-    """Full-agent PM verdict on each user-picked name (curiosity, never traded)."""
+def _curiosity_verdicts(results, enriched, uni, regime, thesis, positions, render: bool = True) -> None:
+    """Run the PM's point-in-time verdict on each name (would it actually act, at
+    what size) and STORE it on the valuation record so the report shows it. With
+    ``render`` also prints the verdict panels. Nothing is traded."""
+    from datetime import date as _date
+
     from .brain import sectors
     from .brain.decide import DecisionEngine
     from .data import get_providers
     from .engine.pipeline import _portfolio_state, _recent_activity
+    from .memory import valuations as _vals
+    from .models import AgentVerdict
 
-    console.print(
-        "\n[bold cyan]Full-agent verdict[/bold cyan] "
-        "[dim](you picked these — the PM weighs in as if considering them, but nothing is traded)[/dim]"
-    )
+    if render:
+        console.print(
+            "\n[bold cyan]Full-agent verdict[/bold cyan] "
+            "[dim](the PM weighs in as if considering them, but nothing is traded)[/dim]"
+        )
     providers = get_providers()
     sector_by_ticker = {td.ticker: (td.sector or (uni.get(td.ticker) or {}).get("sector")) for td in enriched}
 
@@ -953,7 +966,23 @@ def _curiosity_verdicts(results, enriched, uni, regime, thesis, positions) -> No
             except Exception as e:
                 console.log(f"[yellow]{a.ticker}: verdict failed ({e}).[/yellow]")
                 continue
-        _render_verdict(a.ticker, v)
+        # Persist onto the valuation record so the company report can show what the
+        # agent would actually DO with this name (not just what it's worth).
+        try:
+            _vals.attach_verdict(a.ticker, AgentVerdict(
+                as_of=_date.today(),
+                regime=regime,
+                verdict=str(v.get("verdict", "WATCH")),
+                suggested_weight=float(v.get("suggested_weight", 0.0) or 0.0),
+                sizing_rationale=str(v.get("sizing_rationale", "")),
+                fit_with_portfolio=str(v.get("fit_with_portfolio", "")),
+                bottom_line=str(v.get("bottom_line", "")),
+                would_short=bool(v.get("would_short", False)),
+            ))
+        except Exception as e:
+            console.log(f"[yellow]{a.ticker}: storing verdict failed ({e}).[/yellow]")
+        if render:
+            _render_verdict(a.ticker, v)
 
 
 @app.command()

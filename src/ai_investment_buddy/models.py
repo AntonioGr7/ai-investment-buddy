@@ -372,6 +372,30 @@ class ValuationAssessment(BaseModel):
         )
 
 
+# --- The agent's (PM's) verdict on a name -------------------------------------
+class AgentVerdict(BaseModel):
+    """What the PM would ACTUALLY do with a name right now — distinct from the
+    analyst's valuation. A stock can be UNDERVALUED yet still not clear the bar to
+    buy (patience, the cash alternative, a better existing holding, book risk). This
+    captures that decision, at a point in time, given the real portfolio + regime.
+
+    The portfolio is long-only (no shorting), so the agent never *acts* short — but
+    ``would_short`` records the honest directional view (would it be a short if the
+    mandate allowed), so a broken/overvalued story reads differently from a simple
+    'not for us'."""
+
+    as_of: date
+    regime: str = ""
+    # WOULD_BUY | WOULD_ADD | WATCH | PASS | WOULD_AVOID
+    verdict: str = "WATCH"
+    suggested_weight: float = 0.0  # weight of NAV it would give the name IF it acted
+    sizing_rationale: str = ""
+    fit_with_portfolio: str = ""
+    bottom_line: str = ""
+    # Honest directional opinion only — the book is long-only and won't short.
+    would_short: bool = False
+
+
 # --- Persisted per-ticker valuation history ----------------------------------
 class StoredValuation(BaseModel):
     """One dated valuation of a company, with the regime context it was made in."""
@@ -379,6 +403,9 @@ class StoredValuation(BaseModel):
     as_of: date
     regime: str = ""
     assessment: ValuationAssessment
+    # The PM's point-in-time verdict on whether/how it would actually act on this
+    # name (None until the full-agent verdict has been run for this analysis).
+    agent_verdict: AgentVerdict | None = None
     # Headline titles considered at analysis time — used to detect whether *new*
     # news has appeared since, which would invalidate a cached valuation.
     news_seen: list[str] = Field(default_factory=list)

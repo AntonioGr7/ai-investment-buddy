@@ -850,8 +850,16 @@ Using the analyst's assessment, the regime/sector context, your current portfoli
 activity, and your PATIENCE discipline (high bar for action, risk/reward first, structural risk is \
 decisive, cash is a perfectly good position), give your verdict: would you initiate or add this \
 name, merely watch it, or pass/avoid — and at what weight IF you acted. Be willing to say 'it does \
-not clear my bar' and exactly why. Explain how it would (or wouldn't) fit the existing book. This is \
-an honest opinion for the investor, not a committed decision. Call submit_verdict exactly once."""
+not clear my bar' and exactly why — an UNDERVALUED name is NOT automatically a buy (the cash \
+alternative, a better existing holding, book risk, or 'cheap but no catalyst' can all keep you out). \
+Explain how it would (or wouldn't) fit the existing book.
+
+DIRECTIONAL VIEW: the portfolio is LONG-ONLY — you will never actually short. But state your honest \
+directional opinion anyway: set would_short=true ONLY if, were shorting permitted, this is a name you \
+would actively SHORT right now (a broken or clearly overvalued story with downside catalysts), as \
+opposed to one you simply wouldn't own. Keep this an opinion; nothing is traded.
+
+This is an honest opinion for the investor, not a committed decision. Call submit_verdict exactly once."""
 
 CURIOSITY_VERDICT_TOOL = {
     "name": "submit_verdict",
@@ -871,6 +879,12 @@ CURIOSITY_VERDICT_TOOL = {
             "sizing_rationale": {"type": "string", "description": "Why that weight (or why zero)."},
             "fit_with_portfolio": {"type": "string", "description": "How it fits / conflicts with the current book and cash."},
             "bottom_line": {"type": "string", "description": "One candid paragraph: your take for the investor."},
+            "would_short": {
+                "type": "boolean",
+                "description": "Directional opinion only (we are long-only and won't short): true ONLY if "
+                "you'd actively short this name were it permitted — a broken/overvalued story with downside, "
+                "not merely one you wouldn't own.",
+            },
         },
         "required": ["verdict", "suggested_weight", "sizing_rationale", "fit_with_portfolio", "bottom_line"],
     },

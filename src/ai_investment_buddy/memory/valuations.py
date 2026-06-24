@@ -17,6 +17,7 @@ from pathlib import Path
 
 from ..config import DATA_DIR, SETTINGS, ensure_dirs
 from ..models import (
+    AgentVerdict,
     InvestorNote,
     StoredValuation,
     ValuationAssessment,
@@ -151,6 +152,18 @@ def save_many(
             save_valuation(a, as_of, regime, headlines_by_ticker.get(a.ticker.upper()))
             n += 1
     return n
+
+
+def attach_verdict(ticker: str, verdict: "AgentVerdict") -> bool:
+    """Store the PM's point-in-time verdict (would-it-act) onto a name's LATEST
+    stored valuation, so the report can show what the agent would do — not just
+    what the analyst thinks it's worth. Returns False if the name isn't on file."""
+    rec = load(ticker)
+    if rec is None:
+        return False
+    rec.latest.agent_verdict = verdict
+    _persist(rec, rec.latest.regime)
+    return True
 
 
 def add_note(ticker: str, note: InvestorNote) -> bool:
