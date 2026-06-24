@@ -76,6 +76,9 @@
   .pill.neutral{background:var(--panel2);color:var(--muted)}
   .pill.over{background:rgba(63,207,142,.14);color:var(--green)}
   .pill.under{background:rgba(240,97,109,.14);color:var(--red)}
+  .pill.hedge{background:rgba(124,92,255,.16);color:var(--accent2)}
+  .tag-hedge{font-size:10px;font-weight:700;color:var(--accent2);
+    background:rgba(124,92,255,.14);padding:1px 6px;border-radius:5px;margin-left:7px;letter-spacing:.03em}
   .risk-LOW{color:var(--green)} .risk-MEDIUM{color:var(--amber)}
   .risk-HIGH{color:var(--red)} .risk-SEVERE{color:var(--red);font-weight:700}
   .es-TRIGGERED{color:var(--green);font-weight:600}
@@ -115,6 +118,16 @@
   .detail-head .meta{color:var(--muted);font-size:13px}
   .badges{display:flex;gap:8px;flex-wrap:wrap;margin-left:auto;align-items:center}
   .valgrid{grid-template-columns:repeat(auto-fit,minmax(150px,1fr));margin-bottom:22px}
+  .metrics-card{margin-bottom:22px}
+  .mgroup{margin-top:16px}
+  .mgroup:first-child{margin-top:4px}
+  .mgroup h4{margin:0 0 10px;font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--faint)}
+  .mgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(132px,1fr));gap:1px;
+    background:var(--line);border:1px solid var(--line);border-radius:10px;overflow:hidden}
+  .mcell{background:var(--panel);padding:10px 13px}
+  .mcell .ml{color:var(--faint);font-size:11px}
+  .mcell .mv{font-family:var(--mono);font-variant-numeric:tabular-nums;font-size:15px;font-weight:600;margin-top:3px}
+  .mcell .mv.dim{color:var(--faint);font-weight:400}
   .stat{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px 16px}
   .stat .l{color:var(--faint);font-size:11px;text-transform:uppercase;letter-spacing:.05em}
   .stat .v{font-size:20px;font-weight:600;margin-top:5px;font-family:var(--mono)}
@@ -389,7 +402,7 @@ function renderBoard(){
     </tr></thead><tbody>${rows.map(r=>`
     <tr class="clickable" data-tk="${esc(r.ticker)}">
       <td class="num" style="font-weight:600">${r.score>=0?"+":""}${r.score.toFixed(1)}</td>
-      <td><span class="ticker">${esc(r.ticker)}</span></td>
+      <td><span class="ticker">${esc(r.ticker)}</span>${r.asset_class==="macro_hedge"?'<span class="tag-hedge">HEDGE</span>':""}</td>
       <td style="text-align:left" class="muted">${esc(r.sector||"—")}</td>
       <td>${recPill(r.recommendation)}</td>
       <td>${mvPill(r.market_view)}</td>
@@ -448,6 +461,7 @@ function gotoAnalyze(tk){
 
 function renderCompany(d){
   const a=d.record.latest.assessment;
+  const hedge=a.asset_class==="macro_hedge";
   const stat=(l,v,c="")=>`<div class="stat"><div class="l">${l}</div><div class="v ${c}">${v}</div></div>`;
   const blk=(t,v,extra="")=> v ? `<div class="block ${extra}"><h3>${t}</h3><p>${esc(v)}</p></div>` : "";
 
@@ -467,6 +481,7 @@ function renderCompany(d){
           · ${esc(a.valuation_method||"")} · assessed ${esc(d.record.last_assessed)}</div>
       </div>
       <div class="badges">
+        ${a.asset_class==="macro_hedge"?'<span class="pill hedge">DEFENSIVE HEDGE</span>':""}
         ${recPill(a.recommendation)} ${mvPill(a.market_view)}
         <span class="pill neutral">${esc(a.valuation_verdict)}</span>
         <span class="pill neutral">score ${d.opportunity_score>=0?"+":""}${d.opportunity_score.toFixed(1)}</span>
@@ -488,13 +503,15 @@ function renderCompany(d){
       ${stat("News",a.news_sentiment||"—")}
     </div>
 
+    ${hedge?"":'<div id="metricsPanel"></div>'}
+
     <div class="prose">
-      ${blk("Bull case",a.bull_case,"bull")}
-      ${blk("Bear case",a.bear_case,"bear")}
-      ${blk("Mispricing thesis",a.mispricing_thesis,"full")}
-      ${blk("Why the market disagrees",a.why_market_disagrees,"full")}
-      ${blk("Market-implied",a.market_implied)}
-      ${blk("Re-rating catalyst",a.rerating_catalyst)}
+      ${blk(hedge?"Payoff case":"Bull case",a.bull_case,"bull")}
+      ${blk(hedge?"Cost case":"Bear case",a.bear_case,"bear")}
+      ${blk(hedge?"What it hedges":"Mispricing thesis",a.mispricing_thesis,"full")}
+      ${blk(hedge?"Cost of carry / when it bleeds":"Why the market disagrees",a.why_market_disagrees,"full")}
+      ${hedge?"":blk("Market-implied",a.market_implied)}
+      ${blk(hedge?"Trend read":"Re-rating catalyst",a.rerating_catalyst)}
       ${blk("Key risks",a.key_risks,"full")}
       ${blk("News assessment",a.news_assessment,"full")}
       ${preds}
@@ -503,6 +520,60 @@ function renderCompany(d){
       <h2>Investor notes</h2>${d.record.notes.map(n=>`<p style="margin:0 0 10px"><span class="muted mono">${esc(n.date)}</span> —
       <strong>${esc(n.stance||"")}</strong> ${esc(n.user_view)}</p>`).join("")}</div>`:""}
   `;
+  if(!hedge) loadMetrics(a.ticker);
+}
+
+// ---- key-metrics panel (live fundamentals) ----
+const _MGROUPS=[
+  ["Valuation", [
+    ["pe","P/E (TTM)","x"],["forward_pe","P/E (fwd)","x"],["peg","PEG","x"],
+    ["ps","P/S","x"],["pb","P/B","x"],["p_fcf","P/FCF","x"],
+    ["ev_ebitda","EV/EBITDA","x"],["ev_sales","EV/Sales","x"],["ev_fcf","EV/FCF","x"],
+  ]],
+  ["Size & profitability", [
+    ["market_cap","Market cap","$"],["enterprise_value","EV","$"],["net_income","Net income","$"],
+    ["free_cashflow","FCF","$"],["ebitda","EBITDA","$"],["revenue","Revenue","$"],
+    ["gross_margin","Gross margin","%"],["operating_margin","Op. margin","%"],
+    ["profit_margin","Net margin","%"],["roe","ROE","%"],["roa","ROA","%"],
+  ]],
+  ["Growth, per-share & risk", [
+    ["revenue_growth","Rev. growth","%"],["earnings_growth","Earnings growth","%"],
+    ["eps","EPS (TTM)","$ps"],["forward_eps","EPS (fwd)","$ps"],
+    ["debt_to_equity","Debt/Equity","x"],["current_ratio","Current ratio","x"],
+    ["beta","Beta","n"],["dividend_yield","Div. yield","dy"],["fcf_yield","FCF yield","%"],
+  ]],
+];
+function _mfmt(v,kind){
+  if(v==null||(typeof v==="number"&&isNaN(v))) return null;
+  if(kind==="$"){const a=Math.abs(v),s=v<0?"-":"";
+    if(a>=1e12)return s+"$"+(a/1e12).toFixed(2)+"T";
+    if(a>=1e9)return s+"$"+(a/1e9).toFixed(2)+"B";
+    if(a>=1e6)return s+"$"+(a/1e6).toFixed(1)+"M";
+    return s+"$"+a.toFixed(0);}
+  if(kind==="x")return v.toFixed(1)+"×";
+  if(kind==="%")return (v*100).toFixed(1)+"%";
+  if(kind==="dy")return v.toFixed(2)+"%"; // yfinance already reports div yield in percent
+  if(kind==="$ps")return "$"+v.toFixed(2);
+  if(kind==="n")return v.toFixed(2);
+  return String(v);
+}
+async function loadMetrics(ticker){
+  const el=$("#metricsPanel"); if(!el) return;
+  el.innerHTML=`<div class="card metrics-card"><h2>Key metrics</h2>
+    <div class="loading" style="padding:18px"><span class="spinner"></span>Fetching live fundamentals…</div></div>`;
+  let m={};
+  try{ m=(await api("/companies/"+encodeURIComponent(ticker)+"/metrics")).metrics||{}; }
+  catch(e){ el.innerHTML=""; return; }
+  if(!m || !Object.keys(m).some(k=>m[k]!=null && k!=="currency")){ el.innerHTML=""; return; }
+  const groups=_MGROUPS.map(([title,items])=>{
+    const cells=items.map(([k,lab,kind])=>{
+      const f=_mfmt(m[k],kind);
+      return f==null?"":`<div class="mcell"><div class="ml">${lab}</div><div class="mv">${f}</div></div>`;
+    }).filter(Boolean).join("");
+    return cells?`<div class="mgroup"><h4>${title}</h4><div class="mgrid">${cells}</div></div>`:"";
+  }).filter(Boolean).join("");
+  el.innerHTML=`<div class="card metrics-card"><h2>Key metrics
+    <span class="muted" style="font-weight:400;font-size:12px">· live</span></h2>${groups}</div>`;
 }
 
 // ===================== ANALYZE =====================

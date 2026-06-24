@@ -43,6 +43,7 @@ class BrainState(TypedDict, total=False):
     macro: MacroSnapshot
     market_news: list[dict]
     shortlist: list[TickerData]
+    sleeve: list[TickerData]  # defensive macro-hedge instruments (always available)
     sector_scan: str
     industry_scan: str
     holdings: list[str]
@@ -76,6 +77,8 @@ def _make_node_runner(client: LLMClient):
     """Build the three node functions bound to one LLM client."""
 
     def strategist_node(state: BrainState) -> dict:
+        from ..macro_sleeve import format_sleeve_for_strategist
+
         _emit(state, "Strategist: reading the macro/news regime (+ consulting memory)…")
         user = prompts.build_strategist_message(
             as_of=state["as_of"],
@@ -89,6 +92,7 @@ def _make_node_runner(client: LLMClient):
             sector_scan=state.get("sector_scan", ""),
             industry_scan=state.get("industry_scan", ""),
             investor_notes=state.get("investor_notes", ""),
+            sleeve_block=format_sleeve_for_strategist(),
         )
         executor = make_memory_executor(
             state["toolkit"],
@@ -99,7 +103,13 @@ def _make_node_runner(client: LLMClient):
             MEMORY_TOOL_SPECS, prompts.STRATEGIST_TOOL, executor,
         )
         model_finalists = [str(t).upper().strip() for t in payload.get("finalists", [])]
-        known = {td.ticker for td in state["shortlist"]} | set(state["holdings"])
+        # Sleeve names are valid finalists too — the strategist pulls them in only
+        # when the regime warrants a hedge (held sleeve names are forced below).
+        known = (
+            {td.ticker for td in state["shortlist"]}
+            | set(state["holdings"])
+            | {td.ticker for td in state.get("sleeve", [])}
+        )
         # Holdings + watchlist are FORCED finalists — they always go through the
         # full valuation, never capped out. The model's own picks fill the rest.
         forced = [t for t in dict.fromkeys(state["holdings"] + state.get("watchlist", []))
@@ -120,6 +130,10 @@ def _make_node_runner(client: LLMClient):
     def analyst_node(state: BrainState) -> dict:
         view: StrategistView = state["strategy"]
         by_ticker = {td.ticker: td for td in state["shortlist"]}
+        # Sleeve instruments are valued on a separate (non-DCF) path; merge their
+        # TickerData so the analyst has prices/technicals for any hedge finalist.
+        for td in state.get("sleeve", []):
+            by_ticker.setdefault(td.ticker, td)
         positions = {p["ticker"]: p for p in state["portfolio_state"].get("positions", [])}
         toolkit: MemoryToolkit = state["toolkit"]
 
@@ -129,9 +143,11 @@ def _make_node_runner(client: LLMClient):
 
         def assess(ticker: str) -> ValuationAssessment | None:
             td = by_ticker.get(ticker) or TickerData(ticker=ticker)
+            is_hedge = td.asset_class == "macro_hedge"
             # News is pulled HERE — after the strategist chose this name — so the
-            # selection was trend/value-driven and the news is targeted DD.
-            if news_fetcher and not td.headlines:
+            # selection was trend/value-driven and the news is targeted DD. Hedge
+            # ETFs aren't valued on company news, so skip the fetch for them.
+            if news_fetcher and not is_hedge and not td.headlines:
                 try:
                     td.headlines = news_fetcher(ticker, 8)
                 except Exception:
@@ -149,6 +165,12 @@ def _make_node_runner(client: LLMClient):
                             a.upside_pct = round((a.fair_value / td.price - 1) * 100, 1)
                     _emit(state, f"  ↳ {ticker}: reused valuation from {last} (no material change).")
                     return a
+            if is_hedge:
+                return assess_macro_hedge(
+                    client, td, view.regime, view.market_thesis,
+                    positions.get(ticker),
+                    on_tool=lambda name, summary, t=ticker: _emit(state, f"  ↳ {t}: {summary}"),
+                )
             try:
                 dossier = toolkit.ticker_dossier(ticker)
             except Exception:
@@ -307,6 +329,7 @@ def assess_ticker(
     assessment = ValuationAssessment(
         ticker=td.ticker,
         sector=td.sector or "",
+        asset_class=td.asset_class or "equity",
         archetype=str(p.get("archetype", "")),
         valuation_method=str(p.get("valuation_method", "")),
         fair_value=fair,
@@ -342,6 +365,62 @@ def assess_ticker(
         p.get("predictions", []), td, as_of or date.today()
     )
     return assessment
+
+
+def assess_macro_hedge(
+    client: LLMClient,
+    td: TickerData,
+    regime: str,
+    market_thesis: str,
+    position: dict | None = None,
+    on_tool=None,
+) -> ValuationAssessment | None:
+    """Assess ONE defensive-sleeve instrument (gold/commodities/duration/dollar) as
+    a HEDGE for the current regime — a single structured call, NOT the agentic DCF
+    loop (these have no cash flows). Returns a ValuationAssessment shaped like the
+    equity path so the board / PM / UI treat it uniformly. None if the call fails."""
+    from ..macro_sleeve import sleeve_meta
+
+    info = sleeve_meta().get(td.ticker.upper(), {})
+    user = prompts.build_macro_message(
+        td, regime, market_thesis, position,
+        role=info.get("role", ""), drivers=info.get("drivers", ""),
+    )
+    try:
+        p = client.structured_call(
+            prompts.ANALYST_MACRO_SYSTEM, user, prompts.ANALYST_MACRO_TOOL
+        )
+    except Exception:
+        return None
+    if on_tool:
+        on_tool(
+            "hedge",
+            f"hedge read: {p.get('recommendation','?')} (regime fit {p.get('regime_fit','?')})",
+        )
+    # Map the hedge tool payload onto the shared assessment model. There is no
+    # fair value / DCF; the hedge's case lives in the prose + recommendation, and
+    # the entry/upside fields stay None (the board / radar tolerate nulls).
+    hedges = str(p.get("hedges_against", ""))
+    carry = str(p.get("cost_of_carry", ""))
+    return ValuationAssessment(
+        ticker=td.ticker,
+        sector=td.sector or "Macro Hedge",
+        asset_class="macro_hedge",
+        archetype="MACRO_HEDGE",
+        valuation_method="regime/role hedge (no DCF — diversifier ETF)",
+        current_price=td.price,
+        structural_risk=str(p.get("structural_risk", "LOW")),
+        market_view=str(p.get("market_view", "FAIR")),
+        mispricing_thesis=hedges,
+        why_market_disagrees=carry,
+        rerating_catalyst=str(p.get("trend_read", "")),
+        bull_case=str(p.get("bull_case", "")),
+        bear_case=str(p.get("bear_case", "")),
+        key_risks=str(p.get("key_risks", "")),
+        recommendation=p.get("recommendation", "WATCH"),
+        suggested_max_weight=float(p.get("suggested_max_weight", 0.0)),
+        confidence=int(p.get("confidence", 3)),
+    )
 
 
 def _to_decision(as_of: date, payload: dict) -> Decision:

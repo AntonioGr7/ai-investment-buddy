@@ -32,6 +32,12 @@ class FundamentalsProvider(Protocol):
         """Best-effort fundamentals for one company (keys map onto TickerData)."""
         ...
 
+    def metrics(self, ticker: str) -> dict:
+        """Rich, display-oriented metric set for the company report (multiples,
+        profitability, growth — trailing & forward where available). Distinct from
+        ``fundamentals`` (the lean analyst input). Best-effort; {} if unavailable."""
+        ...
+
 
 @runtime_checkable
 class NewsProvider(Protocol):

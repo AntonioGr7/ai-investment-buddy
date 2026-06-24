@@ -113,6 +113,37 @@ All of this is written on **every** run, including `--dry-run`.
 These are **scratch**: gitignored, excluded from state snapshots, and safe to
 delete anytime. Disable with `AIB_AUDIT=0`.
 
+### Defensive macro-hedge sleeve
+
+A long-only equity book has one gear. To let the agent **de-correlate from the
+very thing it's trying to beat** in stressed regimes, it has a small, curated
+sleeve of diversifier ETFs it can reach for as *insurance* — not as a momentum
+bet on a hot commodity:
+
+- **GLD** (gold) — real-asset & fear hedge
+- **SLV** (silver) — higher-beta precious metal
+- **DBC** (broad commodities, incl. energy) — inflation hedge
+- **TLT** (20yr+ Treasuries) — deflation / flight-to-safety hedge
+- **UUP** (US dollar) — global-stress hedge
+
+These have no cash flows, so the analyst does **not** run a DCF on them. They get
+a separate **regime/role assessment**: what regime risk each one hedges, whether
+that risk is elevated *now*, and the **cost of carry** (the regime in which the
+hedge bleeds). The strategist is told to reach for the sleeve **only** when the
+regime genuinely warrants it (risk-off, inflation/rate shock, geopolitical
+stress, or a richly-valued book with no real diversification) and to hold little
+or none of it when things are calm. The PM sizes hedges as *risk reduction*, not
+upside, leaning on them precisely when book risk is flagged (high NAV beta, a
+tripped drawdown circuit-breaker).
+
+Because we trade the **real ETFs at real prices**, contango/roll decay is already
+embedded in the price series — the paper P&L is honest, with no spot-commodity
+fantasy. Execution enforces a **hard cap on the total sleeve** (default 15% of
+NAV, `max_macro_sleeve_weight`) on top of the per-name cap, so the diversifier
+can never quietly dominate the book. Sleeve names show up in the board and
+dashboard with a **HEDGE** tag. The set is configurable in `config.py`
+(`macro_sleeve`); an empty dict disables it.
+
 ### Watchlist (favorites)
 
 The quant screener picks a *different* shortlist each day. Your **watchlist** is

@@ -24,6 +24,7 @@ from ..models import (
     Trade,
     ValuationAssessment,
 )
+from ..macro_sleeve import sleeve_set, universe_entries as sleeve_universe_entries
 from ..universe import get_universe
 from ..watchlist import load_watchlist
 from .benchmark import performance_summary
@@ -255,6 +256,16 @@ def run_daily(
     tickers = [c["ticker"] for c in universe]
     meta = {c["ticker"]: c for c in universe}
 
+    # Defensive macro-hedge sleeve: a small fixed set of diversifier ETFs always
+    # available to the brain (tagged asset_class=macro_hedge). Merged into the meta
+    # so they get technicals, but kept OUT of the equity screener/scan buckets.
+    sleeve_entries = sleeve_universe_entries()
+    sleeve_tkrs = [e["ticker"] for e in sleeve_entries]
+    for e in sleeve_entries:
+        meta.setdefault(e["ticker"], e)
+    if sleeve_tkrs:
+        progress(f"Hedge sleeve: {len(sleeve_tkrs)} diversifier(s) available ({', '.join(sleeve_tkrs)}).")
+
     watchlist = load_watchlist()
     if watchlist:
         progress(
@@ -262,8 +273,8 @@ def run_daily(
             f"({', '.join(watchlist)})."
         )
     # Pull price history for any watchlist name outside the index universe too,
-    # so favorites still get technicals.
-    download_tickers = list(dict.fromkeys(tickers + watchlist))
+    # so favorites still get technicals — and the sleeve ETFs.
+    download_tickers = list(dict.fromkeys(tickers + watchlist + sleeve_tkrs))
 
     progress("Sampling macro snapshot…")
     macro = providers.macro.snapshot()
@@ -277,11 +288,16 @@ def run_daily(
     metrics = screener.compute_metrics(history, meta)
     progress(f"Computed technicals for {len(metrics)} tickers.")
 
+    # The sector/industry scans and the equity screener operate on stocks only —
+    # the sleeve ETFs must not pollute the equity buckets or the sector map.
+    equity_metrics = {t: td for t, td in metrics.items() if td.asset_class == "equity"}
+    sleeve_data = [metrics[t] for t in sleeve_tkrs if t in metrics]
+
     # Sector scan: bottom-up (our constituents) + top-down sector-ETF performance
     # (market-cap-weighted, Finviz-style), to find the punished groups so we
     # deliberately hunt where the market may be overreacting.
     etf_perf = sectors.fetch_sector_performance(providers.prices)
-    sector_stats = sectors.scan_sectors(metrics, etf_perf=etf_perf)
+    sector_stats = sectors.scan_sectors(equity_metrics, etf_perf=etf_perf)
     punished = sectors.punished_sectors(sector_stats)
     sector_scan = sectors.format_sector_scan(sector_stats)
     if punished:
@@ -289,7 +305,7 @@ def run_daily(
 
     # Finer grain: GICS sub-industry dispersion (semis vs SaaS within Tech, etc.) —
     # the level where mispricing concentrates and the sector view averages away.
-    industry_stats = sectors.scan_industries(metrics)
+    industry_stats = sectors.scan_industries(equity_metrics)
     punished_industries = sectors.punished_industries(industry_stats)
     industry_scan = sectors.format_industry_scan(industry_stats)
     if punished_industries:
@@ -301,7 +317,7 @@ def run_daily(
 
     holdings = list(portfolio.positions.keys())
     shortlist_tickers = screener.screen(
-        metrics, holdings, SETTINGS.shortlist_size,
+        equity_metrics, holdings, SETTINGS.shortlist_size,
         watchlist=watchlist, punished=punished,
         punished_industries=punished_industries,
     )
@@ -316,9 +332,9 @@ def run_daily(
     # bar's close NaN), so refresh the shortlist with fresh live prices before the
     # brain values or we trade anything.
     prices = {t: td.price for t, td in metrics.items() if td.price}
-    progress("Refreshing live prices for the shortlist…")
-    _refresh_live_prices(providers, shortlist, prices, progress)
-    _ensure_prices(providers, prices, holdings + watchlist)
+    progress("Refreshing live prices for the shortlist + hedge sleeve…")
+    _refresh_live_prices(providers, shortlist + sleeve_data, prices, progress)
+    _ensure_prices(providers, prices, holdings + watchlist + sleeve_tkrs)
 
     nav_history = store.load_nav_history()
     current_benchmarks = {
@@ -355,6 +371,7 @@ def run_daily(
         portfolio_state=state,
         macro=macro,
         shortlist=shortlist,
+        sleeve=sleeve_data,
         sector_scan=sector_scan,
         industry_scan=industry_scan,
         recent_journal=recent,
@@ -427,7 +444,7 @@ def run_daily(
     # Make sure we have prices for any ticker the AI wants to trade.
     _ensure_prices(providers, prices, [o.ticker for o in decision.orders])
 
-    trades = execute(portfolio, decision, prices, liquidity)
+    trades = execute(portfolio, decision, prices, liquidity, sleeve=sleeve_set())
     progress(f"Executed {len(trades)} trade(s).")
 
     store.save_portfolio(portfolio)
@@ -494,7 +511,7 @@ def commit(dry: RunResult, on_progress=None) -> RunResult:
     prices = dict(dry.prices)
     _ensure_prices(providers, prices, [o.ticker for o in dry.decision.orders])
 
-    trades = execute(portfolio, dry.decision, prices, dry.liquidity)
+    trades = execute(portfolio, dry.decision, prices, dry.liquidity, sleeve=sleeve_set())
     progress(f"Executed {len(trades)} trade(s).")
 
     store.save_portfolio(portfolio)

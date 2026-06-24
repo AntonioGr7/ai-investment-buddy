@@ -123,6 +123,78 @@ class YFinanceFundamentals:
             "prev_close": info.get("previousClose"),
         }
 
+    def metrics(self, ticker: str) -> dict:
+        """A RICH, display-oriented metric set for the company report (trailing +
+        forward where available). Raw numbers; the frontend formats/labels them.
+
+        Units: margins/growth are fractions (0.25 = 25%); debt_to_equity is yfinance's
+        percentage figure converted to a ratio; large $ figures are absolute. Missing
+        values are None. Best-effort — a bad/illiquid symbol just yields {}."""
+        try:
+            info = yf.Ticker(ticker).info or {}
+        except Exception:
+            return {}
+
+        def num(*keys):
+            for k in keys:
+                v = info.get(k)
+                if isinstance(v, (int, float)) and v == v:  # not NaN
+                    return float(v)
+            return None
+
+        mc = num("marketCap")
+        ev = num("enterpriseValue")
+        fcf = num("freeCashflow")
+        rev = num("totalRevenue")
+        de = num("debtToEquity")  # yfinance reports as a percentage (165.6 → 1.66x)
+
+        def ratio(a, b):
+            return round(a / b, 2) if a is not None and b not in (None, 0) else None
+
+        return {
+            "currency": info.get("currency") or "USD",
+            # Size
+            "market_cap": mc,
+            "enterprise_value": ev,
+            # Valuation multiples (trailing / forward)
+            "pe": num("trailingPE"),
+            "forward_pe": num("forwardPE"),
+            "peg": num("pegRatio", "trailingPegRatio"),
+            "ps": num("priceToSalesTrailing12Months"),
+            "pb": num("priceToBook"),
+            "p_fcf": ratio(mc, fcf),
+            "ev_ebitda": num("enterpriseToEbitda"),
+            "ev_sales": num("enterpriseToRevenue") or ratio(ev, rev),
+            "ev_fcf": ratio(ev, fcf),
+            # Per share
+            "eps": num("trailingEps"),
+            "forward_eps": num("forwardEps"),
+            # Profitability ($ and margins)
+            "net_income": num("netIncomeToCommon"),
+            "free_cashflow": fcf,
+            "ebitda": num("ebitda"),
+            "revenue": rev,
+            "gross_margin": num("grossMargins"),
+            "operating_margin": num("operatingMargins"),
+            "profit_margin": num("profitMargins"),
+            "roe": num("returnOnEquity"),
+            "roa": num("returnOnAssets"),
+            # Growth (fractions, YoY)
+            "revenue_growth": num("revenueGrowth"),
+            "earnings_growth": num("earningsGrowth", "earningsQuarterlyGrowth"),
+            # Balance sheet / risk
+            "debt_to_equity": round(de / 100.0, 2) if de is not None else None,
+            "current_ratio": num("currentRatio"),
+            "beta": num("beta"),
+            # Yield
+            "dividend_yield": num("dividendYield"),
+            "fcf_yield": (round(fcf / mc, 4) if fcf is not None and mc else None),
+            # Range / target
+            "fifty_two_week_high": num("fiftyTwoWeekHigh"),
+            "fifty_two_week_low": num("fiftyTwoWeekLow"),
+            "target_mean_price": num("targetMeanPrice"),
+        }
+
 
 class YFinanceNews:
     def headlines(self, ticker: str, limit: int = 5) -> list[str]:

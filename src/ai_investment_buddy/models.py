@@ -39,6 +39,10 @@ class TickerData(BaseModel):
     # covered (more mispricing) but less liquid and data-sparse — handled with
     # more margin-of-safety demand and realistic slippage downstream.
     cap_tier: str = "large"
+    # 'equity' (a company we value bottom-up) or 'macro_hedge' (a curated
+    # diversifier ETF — gold/commodities/duration/dollar — valued on a regime/role
+    # path, not DCF, and capped as a sleeve). See macro_sleeve.py.
+    asset_class: str = "equity"
 
     price: float | None = None
     # Average daily DOLLAR volume (close × volume, ~21d) — the liquidity measure
@@ -264,8 +268,12 @@ class ValuationAssessment(BaseModel):
 
     ticker: str
     sector: str = ""  # GICS sector, for the market-wide opportunity board
+    # 'equity' or 'macro_hedge'. A macro_hedge is a diversifier ETF assessed on a
+    # regime/role path (no DCF) and sized as part of the capped defensive sleeve.
+    asset_class: str = "equity"
     # What kind of business this is, which dictates the valuation method:
-    # e.g. HYPERGROWTH, COMPOUNDER, VALUE, CYCLICAL, FINANCIAL, REIT, TURNAROUND.
+    # e.g. HYPERGROWTH, COMPOUNDER, VALUE, CYCLICAL, FINANCIAL, REIT, TURNAROUND,
+    # or MACRO_HEDGE for sleeve instruments.
     archetype: str = ""
     valuation_method: str = ""  # the primary method used and why it fits
     fair_value: float | None = None  # probability-weighted expected intrinsic value/share

@@ -268,6 +268,7 @@ def board_rows(records: list[ValuationRecord] | None = None) -> list[dict]:
             "score": score,
             "ticker": a.ticker,
             "sector": a.sector or "",
+            "asset_class": a.asset_class or "equity",
             "archetype": a.archetype or "",
             "recommendation": a.recommendation,
             "market_view": a.market_view,

@@ -152,6 +152,49 @@ class Settings:
     # Drawdown from the NAV peak (fraction) that trips the de-risk circuit-breaker.
     drawdown_circuit_breaker: float = 0.15
 
+    # --- Defensive macro-hedge sleeve ---
+    # A small, curated set of macro/diversifier ETFs the agent can reach for as a
+    # DEFENSIVE hedge when the regime is genuinely stressed (risk-off, inflation/
+    # rate shock, geopolitical fear, equity-correlation spike) — NOT as a momentum
+    # bet on a hot commodity. They have no cash flows, so the analyst values them on
+    # a separate regime/role/trend path (not DCF). We trade the real ETFs at real
+    # prices, so roll/contango decay is already embedded in the price series (no
+    # spot-commodity fantasy). Each carries its role + the macro drivers that move
+    # it, surfaced to the strategist. Empty dict disables the sleeve entirely.
+    macro_sleeve: dict[str, dict] = field(
+        default_factory=lambda: {
+            "GLD": {
+                "name": "SPDR Gold Shares",
+                "role": "gold — real-asset & fear hedge",
+                "drivers": "real rates (inverse), USD (inverse), inflation & geopolitical fear",
+            },
+            "SLV": {
+                "name": "iShares Silver Trust",
+                "role": "silver — higher-beta precious metal / industrial demand",
+                "drivers": "real rates (inverse), USD, industrial demand, gold beta",
+            },
+            "DBC": {
+                "name": "Invesco DB Commodity Index",
+                "role": "broad commodities (incl. energy/oil) — inflation hedge",
+                "drivers": "global growth, supply shocks, USD (inverse), inflation",
+            },
+            "TLT": {
+                "name": "iShares 20+ Year Treasury",
+                "role": "long-duration Treasuries — deflation & flight-to-safety hedge",
+                "drivers": "long rates (inverse), growth scares, risk-off bid",
+            },
+            "UUP": {
+                "name": "Invesco US Dollar Index Bullish",
+                "role": "US dollar — risk-off / global-stress hedge",
+                "drivers": "Fed vs rest-of-world rates, global risk aversion (DXY)",
+            },
+        }
+    )
+    # Hard cap on the TOTAL hedge sleeve (sum of all macro_hedge positions) as a
+    # fraction of NAV — execution enforces it on top of the per-name cap. It's a
+    # diversifier, not the main book.
+    max_macro_sleeve_weight: float = 0.15
+
     # --- Universe breadth (small-cap sleeve) ---
     # Skip names below this average daily DOLLAR volume from the screener buckets —
     # untradeable for us in any realistic size (holdings/watchlist bypass). The

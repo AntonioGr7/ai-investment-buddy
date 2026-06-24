@@ -118,7 +118,21 @@ coverage means mispricings persist longer (the neglected-firm effect), exactly w
 view can be right AND different. But weigh the trade-offs: less reliable data, real blow-up risk, and \
 lower liquidity (see ADV). Pursue small-caps where the dislocation is clear; don't tilt the whole book \
 into illiquid names.
-4. ALWAYS include every current holding in finalists (they must be re-evaluated for hold/trim/sell).
+3c. THE DEFENSIVE MACRO-HEDGE SLEEVE. You also have a small, fixed set of macro/diversifier ETFs \
+(gold, silver, broad commodities, long Treasuries, the dollar — listed below with their role and \
+the macro drivers that move them). Treat these as INSURANCE, not as alpha. The equity book is your \
+default engine for beating the benchmark; the sleeve exists for the regimes where being purely \
+long equities is dangerous. Reach for it ONLY when the regime genuinely calls for a hedge — risk-off \
+/ flight-to-safety, an inflation or rate shock, a geopolitical stress, or when equities are richly \
+valued and correlations are spiking so the book has no real diversification. Match the instrument to \
+the threat (e.g. gold/Treasuries for a growth scare or falling real rates; commodities/gold for an \
+inflation shock; the dollar for global stress). In a calm, risk-on, equity-friendly regime the right \
+answer is little or NO sleeve — say so. NEVER add a commodity just because it has been ripping (that \
+is momentum-chasing the hardest-to-time asset class); the sleeve is about reducing book risk in the \
+RIGHT regime, not maximising upside. If you do want hedge exposure, include the relevant sleeve \
+ticker(s) in your finalists and say which regime risk each one hedges; otherwise leave them out.
+4. ALWAYS include every current holding in finalists (they must be re-evaluated for hold/trim/sell). \
+Sleeve names you already hold are likewise always reconsidered.
 
 You have MEMORY TOOLS to consult your own history before deciding: search_memory (grep past \
 journals/trades), read_journal (a past day), list_journal_days, and ticker_dossier (a name's full \
@@ -195,6 +209,7 @@ def build_strategist_message(
     sector_scan: str = "",
     industry_scan: str = "",
     investor_notes: str = "",
+    sleeve_block: str = "",
 ) -> str:
     parts = [f"=== STRATEGY FOR {as_of.isoformat()} ==="]
     parts.append(_fmt_narrative(narrative))
@@ -205,6 +220,8 @@ def build_strategist_message(
         parts.append("\n--- " + sector_scan)
     if industry_scan:
         parts.append("\n--- " + industry_scan)
+    if sleeve_block:
+        parts.append("\n--- " + sleeve_block)
     parts.append("\n--- PERFORMANCE VS BENCHMARKS ---")
     parts.append(performance)
     parts.append(f"\n--- CURRENT HOLDINGS (always finalists): {holdings or 'none'}")
@@ -504,6 +521,124 @@ def build_analyst_message(
 
 
 # =============================================================================
+# Stage 2b — Macro-hedge assessor (sleeve instruments: no DCF)
+# =============================================================================
+ANALYST_MACRO_SYSTEM = """You are the macro/cross-asset specialist at AI Investment Buddy. You are \
+given ONE instrument from the DEFENSIVE HEDGE SLEEVE — a diversifier ETF (gold, silver, broad \
+commodities, long Treasuries, or the dollar). These are NOT companies: they have no earnings, cash \
+flows, or moat, so a DCF is meaningless. Do NOT try to value them bottom-up. Assess them as a HEDGE.
+
+Frame everything around one question: in the CURRENT regime, does holding this reduce the portfolio's \
+risk enough to be worth its cost? Reason about:
+- WHAT IT HEDGES: the specific regime risk this instrument pays off in (e.g. gold/Treasuries in a \
+growth scare or falling real rates; commodities/gold in an inflation shock; the dollar in global \
+risk-off). State whether that risk is elevated RIGHT NOW.
+- THE COST OF CARRY / WHEN IT BLEEDS: every hedge has a cost. Gold pays no yield; commodity ETFs can \
+bleed on contango; long Treasuries get crushed if rates rise; the dollar erodes in risk-on. Be honest \
+about the regime in which this LOSES, because that's the price of the insurance.
+- TREND & POSITIONING: the durable trend and whether the move is already crowded/extended. A hedge \
+bought after it has already spiked is expensive insurance — do not chase.
+- THE HONEST DEFAULT: in a calm, risk-on, equity-friendly regime, the right call for most of the \
+sleeve is WATCH or AVOID (don't pay for insurance you don't need). Recommend BUY/ADD only when the \
+regime genuinely warrants the hedge AND it isn't already over-extended. This is insurance sizing, not \
+an upside bet — keep suggested weights modest.
+
+You do NOT have DCF tools and should not ask for fair value. Give a recommendation, an honest hedge \
+rationale, and the regime in which it pays vs bleeds. Call submit_hedge_assessment exactly once."""
+
+ANALYST_MACRO_TOOL = {
+    "name": "submit_hedge_assessment",
+    "description": "Submit the hedge assessment for one sleeve instrument (not a bottom-up valuation).",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "recommendation": {
+                "type": "string",
+                "enum": ["BUY", "ADD", "HOLD", "WATCH", "TRIM", "SELL", "AVOID"],
+                "description": "Action on this hedge given the current regime. WATCH/AVOID is the "
+                "honest default in a calm risk-on regime.",
+            },
+            "suggested_max_weight": {
+                "type": "number", "minimum": 0.0, "maximum": 1.0,
+                "description": "Suggested cap as a fraction of NAV IF held — insurance sizing, keep modest.",
+            },
+            "hedges_against": {
+                "type": "string",
+                "description": "The specific regime risk this instrument hedges, and whether that risk "
+                "is elevated right now.",
+            },
+            "cost_of_carry": {
+                "type": "string",
+                "description": "The regime in which this hedge LOSES / its carrying cost (no yield, "
+                "contango, rate risk, risk-on erosion) — the price of the insurance.",
+            },
+            "regime_fit": {
+                "type": "string",
+                "enum": ["STRONG", "MODERATE", "WEAK", "UNWARRANTED"],
+                "description": "How well this hedge fits the CURRENT regime. UNWARRANTED = calm regime, "
+                "no need to pay for it.",
+            },
+            "trend_read": {
+                "type": "string",
+                "description": "Durable trend + whether the move is already crowded/extended (chasing a "
+                "spiked hedge is expensive insurance).",
+            },
+            "structural_risk": {
+                "type": "string",
+                "enum": ["LOW", "MEDIUM", "HIGH", "SEVERE"],
+                "description": "For a broad, liquid hedge ETF this is usually LOW (no single-business "
+                "risk); raise it only for genuine instrument-level risk.",
+            },
+            "market_view": {
+                "type": "string",
+                "enum": ["OVERREACTING", "UNDERREACTING", "FAIR"],
+                "description": "Is the market mispricing this hedge's value right now?",
+            },
+            "confidence": {"type": "integer", "minimum": 1, "maximum": 5},
+            "bull_case": {"type": "string", "description": "The payoff: what makes this hedge work from here."},
+            "bear_case": {"type": "string", "description": "When/why it bleeds — the cost case."},
+            "key_risks": {"type": "string"},
+        },
+        "required": [
+            "recommendation", "suggested_max_weight", "hedges_against", "cost_of_carry",
+            "regime_fit", "trend_read", "structural_risk", "market_view", "confidence",
+            "bull_case", "bear_case", "key_risks",
+        ],
+    },
+}
+
+
+def build_macro_message(
+    td: TickerData,
+    regime: str,
+    market_thesis: str,
+    current_position: dict | None,
+    role: str = "",
+    drivers: str = "",
+) -> str:
+    parts = [f"=== HEDGE ASSESSMENT: {td.ticker} ({td.name or '?'}) ==="]
+    parts.append(f"\nMARKET REGIME: {regime}")
+    parts.append(f"STRATEGIST THESIS: {market_thesis}")
+    parts.append("\n--- INSTRUMENT ---")
+    if role:
+        parts.append(f"  role: {role}")
+    if drivers:
+        parts.append(f"  driven by: {drivers}")
+    parts.append("\n--- PRICE & TREND ---")
+    parts.append(fmt_ticker(td))
+    if current_position:
+        parts.append(
+            f"\nWE ALREADY HOLD THIS HEDGE: {json.dumps(current_position)} "
+            "(assess hold/add/trim/exit given the regime)."
+        )
+    parts.append(
+        "\nAssess this purely as a hedge for the current regime — what it protects against, what it "
+        "costs to carry, and whether the regime warrants it now. Call submit_hedge_assessment exactly once."
+    )
+    return "\n".join(parts)
+
+
+# =============================================================================
 # Stage 3 — Portfolio Manager
 # =============================================================================
 PM_SYSTEM = f"""You are the Portfolio Manager of AI Investment Buddy. You make the final \
@@ -548,9 +683,22 @@ instead. If the DRAWDOWN circuit-breaker is tripped, raise the bar to add and pr
 highest-beta / highest-risk-contribution names. A name's share of BOOK variance matters more than its \
 weight — the biggest risk contributor is where you are most exposed.
 
+- THE DEFENSIVE HEDGE SLEEVE (assessments tagged [HEDGE]: gold/silver/commodities/Treasuries/dollar). \
+These are INSURANCE, not alpha — size them to REDUCE book risk, never for upside. Default weight is \
+ZERO: in a calm, risk-on regime you should hold little or none of the sleeve. Add to it only to hedge \
+a genuinely stressed regime or a flagged book risk — e.g. when BOOK RISK shows high effective NAV beta \
+(you're leveraged-long), the drawdown circuit-breaker is tripped, or the strategist's regime is risk-off \
+/ inflation-shock / global-stress. In those cases a hedge that is uncorrelated or negatively correlated \
+to your equity book is one of the few things that genuinely helps. Match the hedge to the threat the \
+analyst named (hedges_against), and remember its cost_of_carry — don't hold insurance you're not using. \
+TOTAL sleeve exposure must stay ≤ {SETTINGS.max_macro_sleeve_weight:.0%} of NAV (execution enforces this \
+on top of the per-name cap); within it, keep individual hedges modest. Do NOT chase a hedge that has \
+already spiked.
+
 Hard guardrails (execution enforces them too):
 - No single position above {SETTINGS.max_position_weight:.0%} of NAV. No leverage, no shorting. \
 Total invested ≤ 100%; remainder is cash.
+- Total defensive hedge sleeve ≤ {SETTINGS.max_macro_sleeve_weight:.0%} of NAV.
 
 You also have MEMORY TOOLS (search_memory, read_journal, list_journal_days, ticker_dossier) to \
 consult your own past decisions before committing — use them when it helps (e.g. check why you \
@@ -592,8 +740,9 @@ PM_TOOL = {
 
 
 def _fmt_assessment(a: ValuationAssessment) -> str:
+    tag = "[HEDGE] " if a.asset_class == "macro_hedge" else ""
     out = (
-        f"{a.one_line()}\n"
+        f"{tag}{a.one_line()}\n"
         f"    suggested_max_weight={a.suggested_max_weight:.0%}"
     )
     if a.entry_price:
@@ -657,6 +806,18 @@ def build_pm_message(
 
     parts.append("\n--- PERFORMANCE VS BENCHMARKS ---")
     parts.append(performance)
+
+    # Surface current sleeve usage vs the cap, so the PM sizes hedges against headroom.
+    held = {p["ticker"]: p.get("weight", 0.0) for p in portfolio_state.get("positions", [])}
+    sleeve_w = sum(w for a in assessments if a.asset_class == "macro_hedge"
+                   for w in [held.get(a.ticker, 0.0)])
+    if any(a.asset_class == "macro_hedge" for a in assessments):
+        parts.append(
+            f"\n--- HEDGE SLEEVE STATUS ---\n"
+            f"Current sleeve exposure: {sleeve_w:.1%} of NAV "
+            f"(hard cap {SETTINGS.max_macro_sleeve_weight:.0%}). It's insurance — "
+            f"default to ~0 unless the regime/book-risk calls for a hedge."
+        )
 
     parts.append(f"\n--- ANALYST ASSESSMENTS ({len(assessments)}) ---")
     for a in assessments:

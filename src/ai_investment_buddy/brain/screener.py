@@ -77,6 +77,7 @@ def compute_metrics(
             sector=m.get("sector") or None,
             industry=m.get("sub_industry") or m.get("industry") or None,
             cap_tier=m.get("cap_tier") or "large",
+            asset_class=m.get("asset_class") or "equity",
             price=round(last, 2),
             avg_dollar_volume=adv,
             prev_close=round(prev, 2),

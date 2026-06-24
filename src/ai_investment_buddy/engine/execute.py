@@ -31,21 +31,61 @@ def _slip(price: float, side: Action, trade_value: float = 0.0, adv: float | Non
     return price * (1 + adj) if side == Action.BUY else price * (1 - adj)
 
 
+def _sleeve_scale(
+    portfolio: Portfolio,
+    decision: Decision,
+    prices: dict[str, float],
+    nav: float,
+    sleeve: set[str],
+) -> float:
+    """Factor (≤1) to shrink every sleeve BUY's target weight by, so the TOTAL
+    defensive-hedge sleeve stays within ``max_macro_sleeve_weight`` of NAV.
+
+    Held sleeve names with no order are left untouched (we don't force-sell, mirroring
+    how the per-name cap only clamps the orders it's given); their weight eats into the
+    sleeve budget, so new hedge buys get whatever room is left."""
+    cap = SETTINGS.max_macro_sleeve_weight
+    ordered = {o.ticker for o in decision.orders if o.ticker in sleeve}
+    untouched = 0.0
+    for t, pos in portfolio.positions.items():
+        if t in sleeve and t not in ordered:
+            px = prices.get(t)
+            if px:
+                untouched += pos.market_value(px) / nav
+    desired = sum(
+        min(o.target_weight, SETTINGS.max_position_weight)
+        for o in decision.orders
+        if o.ticker in sleeve and o.action != Action.SELL and o.target_weight > 0
+    )
+    room = max(0.0, cap - untouched)
+    if desired <= room or desired <= 0:
+        return 1.0
+    return room / desired
+
+
 def execute(
     portfolio: Portfolio,
     decision: Decision,
     prices: dict[str, float],
     liquidity: dict[str, float] | None = None,
+    sleeve: set[str] | None = None,
 ) -> list[Trade]:
     """Mutate ``portfolio`` to enact ``decision``; return the executed trades.
 
     ``liquidity`` maps ticker -> average daily dollar volume; when present, fills
     pay market-impact slippage proportional to how much of a day's volume they
-    represent (so small-cap fills are priced realistically, not as free)."""
+    represent (so small-cap fills are priced realistically, not as free).
+
+    ``sleeve`` is the set of defensive macro-hedge tickers; their COMBINED target
+    weight is capped at ``max_macro_sleeve_weight`` of NAV (on top of the per-name
+    cap), so the diversifier sleeve can never quietly dominate the book."""
     liquidity = liquidity or {}
+    sleeve = sleeve or set()
     nav = portfolio.nav(prices)
     if nav <= 0:
         return []
+
+    sleeve_scale = _sleeve_scale(portfolio, decision, prices, nav, sleeve) if sleeve else 1.0
 
     ts = datetime.now(timezone.utc)
     trades: list[Trade] = []
@@ -63,6 +103,9 @@ def execute(
             continue
 
         target_w = min(o.target_weight, SETTINGS.max_position_weight)
+        # Enforce the aggregate hedge-sleeve cap by shrinking sleeve buy targets.
+        if o.ticker in sleeve and o.action != Action.SELL:
+            target_w *= sleeve_scale
         if o.action == Action.SELL and o.target_weight <= 0:
             target_w = 0.0
         target_value = target_w * nav

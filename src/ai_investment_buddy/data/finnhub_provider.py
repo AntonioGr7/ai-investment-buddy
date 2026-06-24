@@ -200,6 +200,13 @@ class FinnhubFundamentals:
                 out["recommendation"] = label
         return out
 
+    def metrics(self, ticker: str) -> dict:
+        """Rich display metrics for the company report. Delegated to yfinance: it
+        returns the full multiple/profitability/growth set in one free call, where
+        Finnhub's free tier is spotty — and this is display data, not a decision
+        input, so it shouldn't consume the Finnhub quota."""
+        return _yf_fundamentals().metrics(ticker)
+
 
 class FinnhubNews:
     def headlines(self, ticker: str, limit: int = 5) -> list[str]:

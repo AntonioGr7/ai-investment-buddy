@@ -46,6 +46,7 @@ def _summary(rec: ValuationRecord) -> dict:
     return {
         "ticker": a.ticker,
         "sector": a.sector or None,
+        "asset_class": a.asset_class or "equity",
         "archetype": a.archetype or None,
         "recommendation": a.recommendation,
         "market_view": a.market_view or None,
@@ -241,6 +242,26 @@ def company(ticker: str) -> dict:
         "distance_to_entry_pct": a.distance_to_entry_pct(),
         "predictions": preds,
     }
+
+
+# --- Live key metrics for one company (report panel) -------------------------
+@app.get("/companies/{ticker}/metrics")
+def company_metrics(ticker: str) -> dict:
+    """Rich, freshly-fetched fundamentals for the company report (P/E, EV/EBITDA,
+    FCF, growth, … trailing & forward). Fetched live, so it works for any name and
+    can take a second. Returns an empty dict (not an error) when unavailable — the
+    page degrades gracefully."""
+    from ..data import get_providers
+
+    prov = get_providers().fundamentals
+    getter = getattr(prov, "metrics", None)
+    if getter is None:
+        return {"ticker": ticker.upper(), "metrics": {}}
+    try:
+        m = getter(ticker.upper()) or {}
+    except Exception:
+        m = {}
+    return {"ticker": ticker.upper(), "metrics": m}
 
 
 # --- Thesis search (full-text over the prose) --------------------------------

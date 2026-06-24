@@ -43,6 +43,7 @@ class DecisionEngine:
         recent_journal: list[str],
         theses: dict[str, dict],
         performance: str,
+        sleeve: list[TickerData] | None = None,
         market_news: list[dict] | None = None,
         holdings: list[str] | None = None,
         watchlist: list[str] | None = None,
@@ -62,6 +63,7 @@ class DecisionEngine:
             "macro": macro,
             "market_news": market_news or [],
             "shortlist": shortlist,
+            "sleeve": sleeve or [],
             "sector_scan": sector_scan,
             "industry_scan": industry_scan,
             "holdings": holdings or [p["ticker"] for p in portfolio_state.get("positions", [])],
@@ -96,6 +98,14 @@ class DecisionEngine:
         dossier: str = "",
     ) -> ValuationAssessment | None:
         """Run one on-demand valuation for a single name (the `aib valuate` path)."""
+        from ..macro_sleeve import is_hedge
+        from .graph import assess_macro_hedge
+
+        # Sleeve instruments (gold/commodities/duration/dollar) have no cash flows —
+        # value them on the regime/role hedge path, not the DCF analyst.
+        if is_hedge(td.ticker):
+            td.asset_class = "macro_hedge"
+            return assess_macro_hedge(self.client, td, regime, market_thesis, position)
         return assess_ticker(
             self.client, td, regime, market_thesis, position, dossier
         )
