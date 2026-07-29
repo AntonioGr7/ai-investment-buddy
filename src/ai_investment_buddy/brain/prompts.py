@@ -269,11 +269,13 @@ values (use the other tools per scenario) WITH honest probabilities — the bear
 the structural risks the market is pricing — and get the expected value, the DOWNSIDE to your worst \
 case, and the reward/risk ratio. Your fair_value = this expected value; record bear_value, \
 downside_pct and risk_reward from it. This forces you to value like the market does: weigh outcomes, \
-don't cherry-pick the bull. CRITICAL: the bear VALUE must be a genuine adverse scenario, well below \
-today's price — a bear value within a few percent of the current price implies ~zero downside, which \
-is almost never real and produces a meaningless (capped) reward/risk. If your worst case barely dents \
-the price, you have not modelled the downside; lower it to reflect the structural/de-rating risk you \
-yourself flagged.
+don't cherry-pick the bull. The bear must be a GENUINE adverse scenario carrying the structural risks \
+you flagged — sized to those risks, not to a quota. A bear value within a few percent of today's price \
+implies ~zero downside, which is almost never real, so if your worst case barely dents the price you \
+have not modelled it; but do NOT manufacture a catastrophic bear on a durable business just to look \
+prudent either. An honest bear for a fortress compounder may be -15%; for a levered small-cap \
+turnaround it may be -70%. Both are correct when the business justifies them. Reward/risk weights \
+BOTH sides by your probabilities, so an inflated bear silently destroys real opportunities.
 Inputs you don't have, ESTIMATE with stated reasoning. Cross-check at least two methods.
 
 Method:
@@ -337,6 +339,17 @@ catalyst visible' is a valid answer that should lower conviction.
 10. Weigh the macro regime: rate sensitivity, cyclicality, exposure to current catalysts/risks.
 11. Recommendation (BUY/ADD/HOLD/WATCH/TRIM/SELL/AVOID) + suggested max weight — driven by RISK/REWARD \
 and structural risk, not by upside alone.
+11b. CONFIDENCE (1-5) — how much you trust YOUR OWN valuation work on this name. It is NOT how safe the \
+stock is (that is structural_risk) and NOT how much upside there is. Use the full scale; defaulting \
+everything to 3 makes the number useless downstream, because the PM sizes and gates on it:
+   - 5: reliable financials, two+ methods converge, the mispricing has a named catalyst, and you can \
+state precisely what the market is missing.
+   - 4: solid data and methods that broadly agree; the thesis is falsifiable and the main uncertainty \
+is timing or magnitude rather than direction. A well-covered, well-understood business you have valued \
+carefully SHOULD reach 4 — a real bear case does not by itself cap you at 3.
+   - 3: methods diverge materially, or the thesis leans on one estimate you can't cross-check.
+   - 2: thin/unreliable fundamentals, or the outcome hinges on something genuinely unknowable.
+   - 1: you are guessing — say so and DEFER rather than dress it up.
 12. FORECAST (this is the edge). The market prices what is KNOWN today near-perfectly; you only add \
 value with a differentiated view of the FUTURE that is both right AND different from consensus. Where \
 — and ONLY where — you genuinely have such a variant view, emit 1-2 explicit, falsifiable predictions \
@@ -663,6 +676,19 @@ and a name that is CLEARLY more attractive than both your cash and your weakest 
 'Acceptable valuation' is NOT enough — it must be compelling. Never add to OVERVALUED names, however \
 strong the story, nor to anything flagged SEVERE structural risk however cheap (value trap — see \
 why_market_disagrees for the bear the market is pricing).
+- HIGH structural risk is NOT a disqualifier — only SEVERE is. HIGH means demand a wider discount and \
+size smaller (it is the normal reading for most hypergrowth, cyclical and small-cap names, so treating \
+it as a veto would rule out whole asset classes by definition). Judge it through the risk/reward, which \
+already carries the bear you are worried about, and through the analyst's attention price.
+- AN EMPTY BOOK IS NOT A REASON TO RAISE THE BAR. Holding cash is a position, but 'the book is fresh, \
+so the hurdle is higher' is circular — it guarantees the book stays fresh forever, and 100% cash is \
+itself an extreme, undiversified macro bet against equities that you must be able to defend on the \
+merits. A first position carries no incremental concentration, correlation or drawdown risk against \
+existing holdings, so if anything the risk-management case for the FIRST buy is easier than for the \
+tenth. Apply the same standard you would to a fully invested book — no looser, no tighter. If your \
+funnel has produced BUY-rated names with genuine margin of safety and acceptable asymmetry and you \
+have still bought nothing for weeks, the likeliest explanation is that your bar is miscalibrated, not \
+that the entire market is uninvestable. Say so plainly in your notes if you think that is happening.
 - TRIM / SELL only for a REASON: the thesis broke, structural risk rose to HIGH/SEVERE, it became \
 clearly OVERVALUED, risk/reward deteriorated, or you found a materially better use of the capital — \
 NOT for small drift or boredom. Let winners run.

@@ -150,7 +150,17 @@ class Settings:
     rebalance_band: float = 0.03  # 3% of NAV
     # A new position must clear this conviction bar (1-5) — opening a position is a
     # high-bar act, not a default. Stated to the PM; it decides with judgement.
-    min_conviction_to_open: int = 4
+    # NOTE (calibrated 2026-07-29): this was 4, which never opened. Measured over the
+    # first 35 assessments the analyst reported confidence 3 in 27 of them and 4 in
+    # only 3 (all on OVERVALUED names) — its own prompt pushes confidence DOWN on thin
+    # data and never up, so 4 was an unreachable gate, not a high bar. Raise it again
+    # only alongside a rubric that tells the analyst what a 4 looks like.
+    min_conviction_to_open: int = 3
+    # Consecutive committed days of ZERO orders after which the run warns — but only
+    # if at least one BUY/ADD-rated name with a margin of safety was on the table.
+    # Deliberate patience is fine; silently rejecting your own fat pitches for weeks
+    # is a calibration bug, and it went unnoticed for ten runs once already.
+    inaction_streak_warn: int = 3
 
     # --- Portfolio-level (book) risk (soft guardrails; PM is asked to respect) ---
     # Per-name caps are blind to the risk that sinks concentrated long books:

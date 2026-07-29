@@ -149,8 +149,8 @@ def probability_weighted_value(scenarios: list, current_price: float | None = No
     Each scenario is {label, value, probability}; probabilities are normalised by
     their sum (percent or fraction both fine). Returns the expected value and, vs
     the current price, the expected upside, the DOWNSIDE to the worst scenario, and
-    the reward/risk ratio — so a name is judged on risk-adjusted asymmetry, not raw
-    upside."""
+    the reward/risk ratio (probability-weighted gain vs probability-weighted loss) —
+    so a name is judged on risk-adjusted asymmetry, not raw upside."""
     if not scenarios:
         raise ValueError("provide at least one scenario")
     total_p = 0.0
@@ -179,16 +179,33 @@ def probability_weighted_value(scenarios: list, current_price: float | None = No
         out["expected_upside_pct"] = round(exp_up, 1)
         out["downside_pct"] = round(downside, 1)
         out["best_case_upside_pct"] = round((max(values) / current_price - 1) * 100, 1)
-        # Reward/risk: expected upside vs magnitude of downside to the worst case.
+        # Reward/risk = probability-weighted GAIN vs probability-weighted LOSS, each
+        # measured against today's price (a gain/loss ratio at the price threshold).
+        #
+        # It used to be expected-upside / worst-case-downside, which charged the bear
+        # TWICE: once inside the expected value (dragging the numerator down) and again
+        # undiluted in the denominator. With the analyst pushed toward deep bears, that
+        # demanded ~40% post-weighting upside just to reach 1.0, so R/R almost never
+        # cleared the PM's bar and the book sat in cash. Weighting BOTH sides keeps the
+        # bear honest — a heavy, deep bear still crushes the ratio — without pricing it
+        # in twice. The worst case is still reported above, and drives the flag below.
+        gain = 0.0
+        loss = 0.0
+        for s in scenarios:
+            p = float(s.get("probability", 0) or 0) / total_p
+            move = (float(s["value"]) / current_price - 1) * 100
+            if move >= 0:
+                gain += p * move
+            else:
+                loss += p * -move
+        out["weighted_gain_pct"] = round(gain, 1)
+        out["weighted_loss_pct"] = round(loss, 1)
         down_mag = abs(min(0.0, downside))
-        up_mag = max(0.0, exp_up)
-        # Cap R/R: when the worst case sits ≈ at the current price, down_mag → 0 and
-        # the ratio explodes into a meaningless number (e.g. R/R 98 off a -0.4%
-        # "downside"). Cap it, and flag that the bear scenario is implausibly benign
-        # — that is almost always an under-modelled downside, not a free lunch.
-        out["reward_risk"] = (
-            round(min(up_mag / down_mag, _RR_CAP), 2) if down_mag > 1e-9 else None
-        )
+        # Cap R/R: when no scenario sits below the current price, loss → 0 and the
+        # ratio explodes into a meaningless number. Cap it, and flag that the bear
+        # scenario is implausibly benign — that is almost always an under-modelled
+        # downside, not a free lunch.
+        out["reward_risk"] = round(min(gain / loss, _RR_CAP), 2) if loss > 1e-9 else None
         if down_mag < _BENIGN_DOWNSIDE_PCT:
             out["downside_warning"] = (
                 f"Worst-case value is only {downside:+.1f}% from the current price — that "
@@ -281,8 +298,9 @@ VALUATION_TOOL_SPECS: list[dict] = [
         "description": (
             "Probability-weight your bear/base/bull scenario values into one expected "
             "value — the way the MARKET prices a stock. Returns expected value, the "
-            "DOWNSIDE to your worst case, and the reward/risk ratio vs the current "
-            "price. Use this to judge risk-adjusted asymmetry, and to check whether a "
+            "DOWNSIDE to your worst case, and the reward/risk ratio (probability-"
+            "weighted gain vs probability-weighted loss, both measured against today's "
+            "price). Use this to judge risk-adjusted asymmetry, and to check whether a "
             "big gap to the market price survives once you weight the bear case honestly."
         ),
         "input_schema": {
@@ -343,7 +361,9 @@ def _summarize(name: str, result: dict) -> str:
     if name == "probability_weighted_value":
         s = (
             f"scenarios → EV ${result.get('expected_value')}/sh, "
-            f"downside {result.get('downside_pct')}%, R/R {result.get('reward_risk')}"
+            f"worst case {result.get('downside_pct')}%, "
+            f"weighted gain {result.get('weighted_gain_pct')}% vs loss "
+            f"{result.get('weighted_loss_pct')}%, R/R {result.get('reward_risk')}"
         )
         if result.get("downside_warning"):
             s += "  ⚠ benign bear case — re-examine downside"

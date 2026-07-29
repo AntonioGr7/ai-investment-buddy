@@ -173,6 +173,69 @@ def write_reasoning(
         pass
 
 
+_NO_TRADE_MARKER = "_No trades. Held existing allocation._"
+
+
+def _prior_no_trade_streak(as_of: date) -> int:
+    """Count consecutive committed days ending before ``as_of`` that traded nothing.
+
+    Reads the journal because that is the only per-day record of a committed
+    decision (an all-cash book leaves no trades and no NAV change to count)."""
+    from .config import JOURNAL_DIR
+
+    try:
+        files = sorted(f for f in JOURNAL_DIR.glob("*.md") if f.stem < as_of.isoformat())
+    except Exception:
+        return 0
+    streak = 0
+    for f in reversed(files):
+        try:
+            if _NO_TRADE_MARKER not in f.read_text():
+                break
+        except Exception:
+            break
+        streak += 1
+    return streak
+
+
+def inaction_warning(
+    as_of: date,
+    assessments: list[ValuationAssessment],
+    decision: Decision,
+) -> str | None:
+    """Flag a run that passed on its own fat pitches, repeatedly.
+
+    Doing nothing is a legitimate — often correct — decision, so this stays silent
+    while the funnel genuinely offers nothing. It fires only on the combination that
+    can't be explained by an expensive market: several consecutive committed days of
+    zero orders WHILE the analyst was handing up BUY/ADD names with a margin of
+    safety. That is the signature of a miscalibrated gate rather than patience, and
+    it ran undetected for ten runs before the 2026-07-29 calibration fix."""
+    if decision.orders:
+        return None
+    pitches = [
+        a for a in assessments
+        if a.recommendation in ("BUY", "ADD")
+        and a.margin_of_safety
+        and (a.structural_risk or "") != "SEVERE"
+    ]
+    if not pitches:
+        return None
+    streak = _prior_no_trade_streak(as_of) + 1
+    if streak < SETTINGS.inaction_streak_warn:
+        return None
+    names = ", ".join(
+        f"{a.ticker} (R/R {a.risk_reward}, conf {a.confidence}/5)" for a in pitches[:5]
+    )
+    return (
+        f"CALIBRATION WARNING: {streak} consecutive days with zero orders, and today "
+        f"{len(pitches)} name(s) were BUY/ADD-rated WITH a margin of safety and no "
+        f"SEVERE structural risk — {names}. Patience may be right, but check the gates "
+        f"(min_conviction_to_open={SETTINGS.min_conviction_to_open}, R/R, structural-risk "
+        f"handling) and the rolling narrative for a self-reinforcing 'bar is higher' loop."
+    )
+
+
 def write_news(
     as_of: date,
     macro: MacroSnapshot,

@@ -395,6 +395,9 @@ def run_daily(
         f"Decision: {len(decision.orders)} order(s); "
         f"target cash {decision.target_cash_weight:.0%}."
     )
+    warn = audit.inaction_warning(as_of, brain.assessments, decision)
+    if warn:
+        progress(warn)
 
     # Valuations + reasoning are ANALYSIS outputs — recorded on every run (dry
     # included), independent of whether we trade. Portfolio/ledger/journal below
