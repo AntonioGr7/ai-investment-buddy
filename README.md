@@ -210,6 +210,24 @@ before anything executes — `--no-feedback` to skip, or run it anytime with
 `aib feedback`. When you do execute, you can approve **all** trades at once or
 **select** them individually.
 
+**The PM can research the web in this dialogue.** The daily cycle runs off a data
+snapshot, so anything that happened after it — an earnings print, a guidance cut,
+an after-hours move — was invisible to the PM, and it used to reply _"paste me the
+numbers"_. Now it has `web_search` + `fetch_url`: say _"META just printed and
+dropped 10%"_ and it goes and reads the release, quotes the actual revenue/capex
+deltas with source URLs, and tells you whether that's multiple compression or a
+thesis change (marking `changes_thesis` forces a fresh valuation next run). Each
+lookup is echoed in the terminal as it happens.
+
+Search works with **no API key** (DuckDuckGo HTML), and automatically prefers a
+keyed backend if you set one — `TAVILY_API_KEY` or `BRAVE_API_KEY` — which is
+noticeably more reliable. Knobs: `AIB_WEB_SEARCH=0` disables research entirely,
+`AIB_WEB_SEARCH_PROVIDER` (`ddg` | `tavily` | `brave`) forces a backend,
+`AIB_WEB_SEARCH_RESULTS`, `AIB_WEB_FETCH_MAX_CHARS`, `AIB_WEB_TIMEOUT`, and
+`AIB_FEEDBACK_MAX_ITERS` (research rounds per turn) tune it. Note this is
+deliberately **scoped to the conversation**: the daily decision run stays on
+vetted providers so it remains reproducible and bounded.
+
 ### Running several models head-to-head
 
 Every bit of state lives under `AIB_DATA_DIR`, so you can run a separate, fully

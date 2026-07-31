@@ -1154,6 +1154,10 @@ def _select_orders(orders: list):
 def _feedback_context(result) -> str:
     d = result.decision
     lines = [
+        # State the snapshot date explicitly: the PM has live web access in this
+        # dialogue, so it needs to know what "newer than my data" means.
+        f"Today's date: {date_cls.today().isoformat()} "
+        f"(everything below was decided on this run's data snapshot)",
         f"Regime: {result.strategy.regime if getattr(result, 'strategy', None) else '?'}",
         f"PM thesis: {d.market_thesis}",
     ]
@@ -1183,6 +1187,11 @@ def _run_feedback(result) -> None:
         "\n[bold cyan]Feedback[/bold cyan] — tell the PM what you think "
         "(a name, the market, a thesis). It will engage and remember. Empty to skip."
     )
+    if SETTINGS.web_search_enabled:
+        console.print(
+            f"[dim]The PM can search the web here (via {SETTINGS.web_search_provider}), "
+            "so it can look up news that post-dates this run.[/dim]"
+        )
     first = typer.prompt("you", default="", show_default=False)
     if not first.strip():
         console.print("[dim]No feedback. Done.[/dim]")
@@ -1197,8 +1206,16 @@ def _run_feedback(result) -> None:
 
     while True:
         try:
-            with console.status("[bold]PM is thinking…", spinner="dots"):
-                payload = engine.discuss(context, transcript)
+            with console.status("[bold]PM is thinking…", spinner="dots") as status:
+
+                def on_tool(name: str, args: dict, _s=status) -> None:
+                    # Show the research as it happens — an unexplained 30s pause
+                    # while it reads three sources looks like a hang.
+                    label = args.get("query") or args.get("url") or ""
+                    _s.update(f"[bold]PM is researching…[/bold] {name}: {label}"[:160])
+                    console.print(f"[dim]  ↳ web: {name}({label})[/dim]")
+
+                payload = engine.discuss(context, transcript, on_tool=on_tool)
         except Exception as e:
             console.print(f"[red]Discussion failed: {e}[/red]")
             break

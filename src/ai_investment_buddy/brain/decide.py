@@ -131,15 +131,32 @@ class DecisionEngine:
             prompts.CURIOSITY_VERDICT_SYSTEM, user, prompts.CURIOSITY_VERDICT_TOOL
         )
 
-    def discuss(self, context: str, transcript: list[dict]) -> dict:
+    def discuss(self, context: str, transcript: list[dict], on_tool=None) -> dict:
         """One turn of the post-run feedback dialogue. ``transcript`` is the
         running list of {role, text} turns (latest is the investor's). Returns the
-        feedback tool payload: response, stance, ticker_notes, market_note."""
+        feedback tool payload: response, stance, ticker_notes, market_note.
+
+        The investor routinely brings up things that post-date the daily data pull
+        ("META just printed"), so this turn is agentic: the PM can search the web
+        and read pages before replying. ``on_tool(name, args)`` reports each lookup
+        so the caller can show what it is doing. Falls back to a single
+        no-tools call when web research is disabled (AIB_WEB_SEARCH=0)."""
+        from ..config import SETTINGS
         from . import prompts
+        from .web_tools import WEB_TOOL_SPECS, make_web_executor, web_tools_enabled
 
         user = prompts.build_feedback_message(context, transcript)
-        return self.client.structured_call(
-            prompts.FEEDBACK_SYSTEM, user, prompts.FEEDBACK_TOOL
+        if not web_tools_enabled():
+            return self.client.structured_call(
+                prompts.feedback_system(False), user, prompts.FEEDBACK_TOOL
+            )
+        return self.client.agentic_call(
+            prompts.feedback_system(True),
+            user,
+            WEB_TOOL_SPECS,
+            prompts.FEEDBACK_TOOL,
+            make_web_executor(on_call=on_tool),
+            max_iters=SETTINGS.feedback_max_iters,
         )
 
     def consolidate(

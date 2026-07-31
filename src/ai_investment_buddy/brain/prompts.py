@@ -971,6 +971,33 @@ ONLY when the input genuinely changes how you'd value a name (this forces a fres
 run). Attach company-specific views to that ticker; keep broad market views as a market_note. If \
 there is nothing durable to store, return empty arrays. Call submit_feedback exactly once."""
 
+# Appended to FEEDBACK_SYSTEM only when live web tools are actually attached to the
+# call — promising research the model cannot perform is worse than staying silent.
+FEEDBACK_RESEARCH_BLOCK = """
+
+RESEARCH. Today's decision was built from a data snapshot taken earlier, so the investor may \
+well raise something newer than anything in your context. You have live web access in this \
+conversation: `web_search` to find sources and `fetch_url` to read them. Use them instead of \
+asking the investor to paste numbers at you — if they mention an earnings print, guidance, a \
+price move or a news event you do not have, go look it up, then re-underwrite on what you find.
+- Never ask for data you could fetch yourself, and never claim you cannot look something up.
+- Cite what you used inline (source + URL) for any figure that moves your view.
+- Prefer primary sources (company IR, press release, SEC filing) over commentary, and check the \
+date on anything you quote.
+- If a search fails or sources disagree, say exactly that and give your view under stated \
+uncertainty. Do NOT invent figures — a fabricated number here poisons the memory you write.
+- Distinguish price moving from thesis changing: a drawdown alone is multiple compression; only \
+a change in the fundamentals (revenue / margins / capex / competition) re-rates fair value.
+- Research first, then reply: call the research tools as many times as you need, and call \
+submit_feedback only once, as your final act."""
+
+
+def feedback_system(with_web: bool) -> str:
+    """The PM's feedback-dialogue system prompt, with the research contract added
+    only when the web tools are attached."""
+    return FEEDBACK_SYSTEM + (FEEDBACK_RESEARCH_BLOCK if with_web else "")
+
+
 FEEDBACK_TOOL = {
     "name": "submit_feedback",
     "description": "Reply to the investor and capture any durable takeaways.",

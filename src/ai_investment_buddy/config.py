@@ -250,6 +250,44 @@ class Settings:
     macro_provider: str = os.getenv("AIB_MACRO_PROVIDER", "yfinance")
     market_news_provider: str = os.getenv("AIB_MARKET_NEWS_PROVIDER", "rss")
 
+    # --- Live web research (the feedback dialogue only) ---
+    # Curated RSS + prices are a once-a-day snapshot, so the PM was structurally
+    # blind to anything the investor brought up after the run ("META just printed").
+    # In the feedback conversation it can search the web and read pages, so it
+    # re-underwrites on the actual numbers instead of saying "paste them for me".
+    # Deliberately NOT wired into the daily decision cycle: that run must stay
+    # reproducible and bounded, and unvetted web text is neither.
+    web_search_enabled: bool = os.getenv("AIB_WEB_SEARCH", "1").lower() not in (
+        "0", "false", "no", "off",
+    )
+    # Results per search, and how much of a fetched page reaches the model.
+    web_search_results: int = int(os.getenv("AIB_WEB_SEARCH_RESULTS", "6"))
+    web_fetch_max_chars: int = int(os.getenv("AIB_WEB_FETCH_MAX_CHARS", "6000"))
+    web_timeout: int = int(os.getenv("AIB_WEB_TIMEOUT", "20"))
+    # Max tool-use rounds per dialogue turn (searches + fetches, then the reply).
+    feedback_max_iters: int = int(os.getenv("AIB_FEEDBACK_MAX_ITERS", "8"))
+
+    @property
+    def brave_api_key(self) -> str | None:
+        return os.getenv("BRAVE_API_KEY")
+
+    @property
+    def tavily_api_key(self) -> str | None:
+        return os.getenv("TAVILY_API_KEY")
+
+    @property
+    def web_search_provider(self) -> str:
+        """"ddg" (keyless HTML scrape) unless a keyed backend is configured — those
+        are far more reliable under load. Explicit env always wins."""
+        explicit = os.getenv("AIB_WEB_SEARCH_PROVIDER")
+        if explicit:
+            return explicit.strip().lower()
+        if self.tavily_api_key:
+            return "tavily"
+        if self.brave_api_key:
+            return "brave"
+        return "ddg"
+
     # --- Hang guards (no single run should ever stall for hours) ---
     # Global default socket timeout (seconds): the universal backstop so a stalled
     # network read (e.g. yfinance, which passes no timeout of its own) raises
