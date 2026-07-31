@@ -423,14 +423,18 @@ def assess_macro_hedge(
     )
 
 
-def _to_decision(as_of: date, payload: dict) -> Decision:
-    orders = []
-    for o in payload.get("orders", []):
+def parse_orders(raw) -> list[TradeOrder]:
+    """Turn a model's raw order payload into TradeOrders, skipping malformed ones.
+
+    Shared by the PM's decision and the feedback dialogue's proposed orders — both
+    speak the same {ticker, action, target_weight, rationale, conviction} shape."""
+    orders: list[TradeOrder] = []
+    for o in raw or []:
         try:
             orders.append(
                 TradeOrder(
                     ticker=str(o["ticker"]).upper().strip(),
-                    action=Action(o["action"]),
+                    action=Action(str(o["action"]).upper().strip()),
                     target_weight=float(o.get("target_weight", 0.0)),
                     rationale=str(o.get("rationale", "")),
                     conviction=int(o.get("conviction", 3)),
@@ -438,6 +442,11 @@ def _to_decision(as_of: date, payload: dict) -> Decision:
             )
         except Exception:
             continue
+    return orders
+
+
+def _to_decision(as_of: date, payload: dict) -> Decision:
+    orders = parse_orders(payload.get("orders"))
     return Decision(
         as_of=as_of,
         market_thesis=str(payload.get("market_thesis", "")),

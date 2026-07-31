@@ -965,6 +965,20 @@ valuation logic. Do not cave just because they are the boss; your job is to be r
 - Ask a sharp follow-up question when their input is interesting but incomplete.
 Be concise and direct — a few sentences, like a smart colleague, not an essay.
 
+ACTING ON THE CONVERSATION. Your reply is words only — nothing you say here reaches the \
+portfolio unless you put it in `proposed_orders`. So when the discussion converges on an actual \
+trade (the investor tells you to buy or sell something, or agrees to a size you named), emit it \
+as an order with the exact target weight you settled on — target_weight is this name's weight of \
+NAV *after* the trade, as a fraction: "3% position" → 0.03, and for a name already held, "add 2%" \
+means its current weight + 0.02. The order joins today's slate and the investor still approves \
+each trade before anything executes, so proposing is not executing.
+- NEVER say you are buying/selling/upgrading something while leaving proposed_orders empty. If \
+you agreed to act, the order must be there — the investor's portfolio is the only place where \
+agreement counts.
+- Equally, do NOT propose orders for hypotheticals, for a "maybe later, if it holds" size, or for \
+your own musings the investor has not assented to. Discussing a name is not a mandate to trade it.
+- If you need the size before you can act, ask for it and leave the array empty this turn.
+
 Then capture what is worth REMEMBERING for your future self. A note should be a durable view about \
 a company or the market that should inform future analysis — not chit-chat. Mark changes_thesis=true \
 ONLY when the input genuinely changes how you'd value a name (this forces a fresh valuation next \
@@ -1036,8 +1050,38 @@ FEEDBACK_TOOL = {
                 "type": "string",
                 "description": "A durable market-wide takeaway to remember, if any. Empty otherwise.",
             },
+            # Without this the dialogue was action-dead: the PM could agree to buy a
+            # name, the investor could say "do it", and the run would still execute
+            # only the slate computed before the conversation started.
+            "proposed_orders": {
+                "type": "array",
+                "description": (
+                    "Trades to ADD to today's slate, because this conversation converged on "
+                    "them. Emit only what the investor has agreed to (or asked for); empty "
+                    "array otherwise. Each one still needs their approval before it executes."
+                ),
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "ticker": {"type": "string"},
+                        "action": {"type": "string", "enum": ["BUY", "SELL", "HOLD"]},
+                        "target_weight": {
+                            "type": "number",
+                            "minimum": 0.0,
+                            "maximum": 1.0,
+                            "description": "Weight of NAV AFTER the trade (0.03 = a 3% position).",
+                        },
+                        "rationale": {
+                            "type": "string",
+                            "description": "Why — including what in this discussion changed it.",
+                        },
+                        "conviction": {"type": "integer", "minimum": 1, "maximum": 5},
+                    },
+                    "required": ["ticker", "action", "target_weight", "rationale"],
+                },
+            },
         },
-        "required": ["response", "stance", "ticker_notes", "market_note"],
+        "required": ["response", "stance", "ticker_notes", "market_note", "proposed_orders"],
     },
 }
 

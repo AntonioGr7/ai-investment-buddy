@@ -210,6 +210,31 @@ def _ensure_prices(providers, prices: dict[str, float], tickers: list[str]) -> N
                 prices[t] = px
 
 
+def _ensure_liquidity(providers, liquidity: dict[str, float], tickers: list[str], progress) -> None:
+    """Fill in avg daily dollar volume for tickers missing from the liquidity map.
+
+    Orders used to come only from the screened shortlist, which always has an ADV.
+    The feedback dialogue can now add a name from outside it, and an unknown ADV is
+    charged the WORST-CASE market impact (5%) — which would quietly tax a trade the
+    investor explicitly asked for. Best-effort: a failure just leaves it unknown."""
+    missing = [t for t in dict.fromkeys(tickers) if not liquidity.get(t)]
+    if not missing:
+        return
+    try:
+        hist = providers.prices.history(missing, lookback_days=60)
+        for t, td in screener.compute_metrics(hist, {}).items():
+            if td.avg_dollar_volume:
+                liquidity[t] = td.avg_dollar_volume
+        found = [t for t in missing if liquidity.get(t)]
+        if found:
+            progress(f"Fetched liquidity (ADV) for {', '.join(found)}.")
+        for t in missing:
+            if not liquidity.get(t):
+                progress(f"(no ADV for {t} — worst-case market-impact slippage applies)")
+    except Exception as e:
+        progress(f"(liquidity lookup skipped: {e})")
+
+
 def _refresh_live_prices(providers, shortlist, prices: dict[str, float], progress) -> None:
     """Overwrite the shortlist's prices with a freshly-fetched current price.
 
@@ -512,7 +537,14 @@ def commit(dry: RunResult, on_progress=None) -> RunResult:
     providers = get_providers()
     portfolio = dry.portfolio
     prices = dict(dry.prices)
-    _ensure_prices(providers, prices, [o.ticker for o in dry.decision.orders])
+    ordered = [o.ticker for o in dry.decision.orders]
+    # The slate may have grown since the analysis (the feedback dialogue can add a
+    # name), so make sure everything we're about to trade has a price and an ADV.
+    _ensure_prices(providers, prices, ordered)
+    _ensure_liquidity(providers, dry.liquidity, ordered, progress)
+    missing_px = [t for t in ordered if not _valid_px(prices.get(t))]
+    if missing_px:
+        progress(f"(no price for {', '.join(missing_px)} — those orders cannot execute)")
 
     trades = execute(portfolio, dry.decision, prices, dry.liquidity, sleeve=sleeve_set())
     progress(f"Executed {len(trades)} trade(s).")

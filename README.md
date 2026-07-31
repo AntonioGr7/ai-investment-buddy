@@ -204,11 +204,20 @@ takeaways are stored:
   re-values the name from scratch.
 - **Market-wide views** go to `journal/investor_notes.md`, always loaded into the
   strategist and PM prompts.
+- **Trades you agree on in the conversation join today's slate.** If the discussion
+  converges on an actual trade — _"ok, let's buy it"_ / _"3% of NAV"_ — the PM emits
+  it as a real order, it shows up in the decision table, and it goes through the same
+  approval step and the same execution guardrails (position cap, sleeve cap, no
+  leverage, slippage) as anything the PM proposed on its own. It won't propose orders
+  for hypotheticals or sizes you haven't assented to, and nothing executes without
+  your approval.
 
 It prompts **right after the analysis** (before the trade step), so you can react
-before anything executes — `--no-feedback` to skip, or run it anytime with
-`aib feedback`. When you do execute, you can approve **all** trades at once or
-**select** them individually.
+before anything executes — `--no-feedback` to skip. When you do execute, you can
+approve **all** trades at once or **select** them individually. `aib feedback` runs
+the dialogue on its own later, but that path only talks and remembers: there is no
+pending slate to trade against, so it tells you to use `aib run` instead of quietly
+dropping an agreed trade.
 
 **The PM can research the web in this dialogue.** The daily cycle runs off a data
 snapshot, so anything that happened after it — an earnings print, a guidance cut,

@@ -154,9 +154,17 @@ def run(
         f"· news read in data/news/{result.as_of.isoformat()}/[/dim]"
     )
 
-    # The agent invites discussion right after the analysis — before any trade.
+    # The agent invites discussion right after the analysis — before any trade, so
+    # anything the discussion converges on joins today's slate instead of being lost.
     if not no_feedback and not yes and sys.stdin.isatty():
-        _run_feedback(result)
+        proposed = _run_feedback(result)
+        if proposed:
+            _merge_proposed_orders(result.decision, proposed)
+            console.print(
+                f"\n[bold]{len(proposed)} trade(s) from the discussion added to today's "
+                "slate.[/bold]"
+            )
+            _render_decision(result)
 
     if dry_run:
         console.print("\n[dim]Dry run — nothing was executed.[/dim]")
@@ -1173,13 +1181,65 @@ def _feedback_context(result) -> str:
         lines.append("Key valuations:")
         for a in result.assessments[:12]:
             lines.append("  " + a.one_line())
+    # The PM can propose trades out of this conversation, so it needs the book it
+    # would be sizing against — a target weight is meaningless without NAV.
+    pf = getattr(result, "portfolio", None)
+    prices = getattr(result, "prices", None) or {}
+    if pf is not None:
+        try:
+            nav = pf.nav(prices)
+            lines.append(
+                f"Book: NAV ${nav:,.0f}, cash ${pf.cash:,.0f} ({pf.cash / nav:.0%})"
+                if nav else f"Book: cash ${pf.cash:,.0f}"
+            )
+            for t, pos in sorted(
+                pf.positions.items(),
+                key=lambda kv: kv[1].market_value(prices.get(kv[0], 0.0)),
+                reverse=True,
+            ):
+                mv = pos.market_value(prices.get(t, 0.0))
+                lines.append(
+                    f"  {t}: {mv / nav:.1%} of NAV (${mv:,.0f})" if nav else f"  {t}"
+                )
+        except Exception:
+            pass
     return "\n".join(lines)
 
 
-def _run_feedback(result) -> None:
+def _merge_proposed_orders(decision, proposed: list) -> None:
+    """Fold dialogue-proposed orders into the decision, in place.
+
+    A proposal for a name the PM already had an order on SUPERSEDES it (the
+    conversation happened after that order was written, so it is the later view);
+    everything else is appended."""
+    by_ticker = {o.ticker: o for o in proposed}
+    merged = [o for o in decision.orders if o.ticker not in by_ticker]
+    merged.extend(by_ticker.values())
+    decision.orders = merged
+
+
+def _render_proposals(orders: list) -> None:
+    table = Table(title="Trades proposed in the discussion")
+    for col in ("Ticker", "Action", "Target weight", "Conv", "Why"):
+        table.add_column(col, justify="right" if col != "Why" else "left")
+    for o in orders:
+        table.add_row(
+            o.ticker, o.action.value, f"{o.target_weight:.1%}",
+            str(o.conviction), (o.rationale or "")[:80],
+        )
+    console.print(table)
+
+
+def _run_feedback(result) -> list:
     """Interactive post-run dialogue: the PM discusses the decision, challenges or
-    agrees, and stores any durable takeaways into memory."""
+    agrees, and stores any durable takeaways into memory.
+
+    Returns the trades the conversation converged on (TradeOrder list) so the caller
+    can fold them into today's slate. Without this the dialogue was action-dead: the
+    PM could agree to buy a name and the run would still execute only the pre-
+    conversation slate — the investor's "ok, let's buy it" went nowhere."""
     from .brain.decide import DecisionEngine
+    from .brain.graph import parse_orders
     from .memory import valuations
     from .models import InvestorNote
 
@@ -1195,13 +1255,15 @@ def _run_feedback(result) -> None:
     first = typer.prompt("you", default="", show_default=False)
     if not first.strip():
         console.print("[dim]No feedback. Done.[/dim]")
-        return
+        return []
 
     engine = DecisionEngine()
     context = _feedback_context(result)
     transcript = [{"role": "investor", "text": first.strip()}]
     ticker_notes: dict[str, tuple[str, bool, str]] = {}  # ticker -> (note, changes, stance)
     market_notes: list[str] = []
+    # ticker -> order: a later turn revising the size supersedes the earlier one.
+    proposed: dict[str, object] = {}
     today = date_cls.today()
 
     while True:
@@ -1230,6 +1292,14 @@ def _run_feedback(result) -> None:
         mn = str(payload.get("market_note", "")).strip()
         if mn:
             market_notes.append(mn)
+        turn_orders = parse_orders(payload.get("proposed_orders"))
+        if turn_orders:
+            for o in turn_orders:
+                proposed[o.ticker] = o
+            _render_proposals(turn_orders)
+            console.print(
+                "[dim]Added to today's slate — you approve each trade before it executes.[/dim]"
+            )
 
         nxt = typer.prompt("you (empty to finish)", default="", show_default=False)
         if not nxt.strip():
@@ -1262,6 +1332,8 @@ def _run_feedback(result) -> None:
     else:
         console.print("[dim]Nothing durable to store.[/dim]")
 
+    return list(proposed.values())
+
 
 @app.command()
 def feedback():
@@ -1272,12 +1344,27 @@ def feedback():
         console.print("[yellow]No decision logged yet.[/yellow] Run [bold]aib run[/bold] first.")
         raise typer.Exit(0)
 
+    pf = store.load_portfolio() if store.is_initialized() else None
+
     class _Ctx:  # minimal shim so _run_feedback can build context from the journal
         decision = type("D", (), {"market_thesis": entries[-1][:1500], "orders": []})()
         strategy = None
         assessments = []
+        # Give the PM the real book so any size it proposes is anchored to NAV.
+        portfolio = pf
+        prices = _latest_prices_for(pf) if pf else {}
 
-    _run_feedback(_Ctx())
+    proposed = _run_feedback(_Ctx())
+    if proposed:
+        # This command has no pending slate to execute against (no prices, liquidity
+        # or valuations from a run), so be explicit rather than silently dropping them.
+        console.print(
+            "\n[yellow]These trades were agreed here but NOT executed[/yellow] — "
+            "`aib feedback` only talks and remembers. Run [bold]aib run[/bold] to trade: "
+            "the note above is stored, and a thesis-changing one forces a fresh "
+            "valuation of the name."
+        )
+        _render_proposals(proposed)
 
 
 # --- Rendering helpers -------------------------------------------------------
