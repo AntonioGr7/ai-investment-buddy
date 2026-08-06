@@ -139,6 +139,10 @@ class OpenAIClient:
         # don't keep sending an unsupported param for the rest of the process.
         self._sampling = True
         self._reasoning = True
+        # Some models default reasoning ON and reject it alongside function tools
+        # in /v1/chat/completions: omitting the param isn't enough, they need an
+        # explicit reasoning_effort="none".
+        self._reasoning_none = False
 
     def _create(self, **kwargs):
         """chat.completions.create adding low-temp+seed (reproducibility) and
@@ -159,6 +163,8 @@ class OpenAIClient:
                     extra["seed"] = SETTINGS.decision_seed
             if self._reasoning and SETTINGS.reasoning_effort != "off":
                 extra["reasoning_effort"] = SETTINGS.reasoning_effort
+            elif self._reasoning_none:
+                extra["reasoning_effort"] = "none"
             try:
                 return self.client.chat.completions.create(**kwargs, **extra)
             except Exception as e:
@@ -167,9 +173,17 @@ class OpenAIClient:
                 if self._sampling and any(w in msg for w in ("temperature", "seed", "sampling")):
                     self._sampling = False
                     changed = True
-                if self._reasoning and "reasoning" in msg:
-                    self._reasoning = False
-                    changed = True
+                if "reasoning" in msg:
+                    if self._reasoning:
+                        # First fall back to an explicit "none" (some models need
+                        # it to be turned off, not just left out)…
+                        self._reasoning = False
+                        self._reasoning_none = True
+                        changed = True
+                    elif self._reasoning_none:
+                        # …and only then drop the param altogether.
+                        self._reasoning_none = False
+                        changed = True
                 if not changed:
                     raise
         return self.client.chat.completions.create(**kwargs)
