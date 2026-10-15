@@ -28,7 +28,7 @@ from ..models import (
     TradeOrder,
     ValuationAssessment,
 )
-from . import prompts, valuation_tools
+from . import prompts, screener, valuation_tools
 from .llm import LLMClient, get_llm_client
 from .mem_tools import MEMORY_TOOL_SPECS, make_memory_executor
 
@@ -59,6 +59,7 @@ class BrainState(TypedDict, total=False):
     calibration_summary: str
     force_revaluation: bool
     news_fetcher: Any  # optional callable(ticker, limit) -> list[str]; news pulled post-selection
+    inputs_fetcher: Any  # optional callable(ticker) -> dict of hard DCF inputs (finalists only)
     toolkit: MemoryToolkit
     # Intermediates / outputs
     strategy: StrategistView
@@ -140,6 +141,7 @@ def _make_node_runner(client: LLMClient):
         force = state.get("force_revaluation", False)
         as_of = state["as_of"]
         news_fetcher = state.get("news_fetcher")
+        inputs_fetcher = state.get("inputs_fetcher")
 
         def assess(ticker: str) -> ValuationAssessment | None:
             td = by_ticker.get(ticker) or TickerData(ticker=ticker)
@@ -171,6 +173,7 @@ def _make_node_runner(client: LLMClient):
                     positions.get(ticker),
                     on_tool=lambda name, summary, t=ticker: _emit(state, f"  ↳ {t}: {summary}"),
                 )
+            screener.attach_valuation_inputs(td, inputs_fetcher)
             try:
                 dossier = toolkit.ticker_dossier(ticker)
             except Exception:
@@ -308,19 +311,102 @@ def assess_ticker(
 ) -> ValuationAssessment | None:
     """Run ONE disciplined fair-value valuation, with the model free to call the
     DCF / reverse-DCF / exit-multiple calculators before submitting. Shared by the
-    analyst node and the on-demand ``aib valuate`` command. None if the call fails."""
-    user = prompts.build_analyst_message(
-        td, regime, market_thesis, position, dossier, investor_notes, calibration
-    )
+    analyst node and the on-demand ``aib valuate`` command. None if the call fails.
+
+    The prior stored read (if recent) is shown to the model, and the result is
+    held to it: a fair-value move beyond ``max_unexplained_fv_move`` without a
+    stated fundamental change gets ONE reconciliation retry, then the prior
+    numbers are carried forward (see ``_anchor_to_prior``)."""
+    as_of = as_of or date.today()
+    prior = valuations.prior_for_anchor(td.ticker, as_of)
     executor = valuation_tools.make_valuation_executor(on_call=on_tool)
-    try:
-        p = client.agentic_call(
-            prompts.ANALYST_SYSTEM, user,
-            valuation_tools.VALUATION_TOOL_SPECS, prompts.ANALYST_TOOL, executor,
-            max_iters=SETTINGS.analyst_max_iters,
+
+    def run(review: str = "") -> ValuationAssessment | None:
+        user = prompts.build_analyst_message(
+            td, regime, market_thesis, position, dossier, investor_notes, calibration,
+            prior=prior, review=review,
         )
-    except Exception:
+        try:
+            p = client.agentic_call(
+                prompts.ANALYST_SYSTEM, user,
+                valuation_tools.VALUATION_TOOL_SPECS, prompts.ANALYST_TOOL, executor,
+                max_iters=SETTINGS.analyst_max_iters,
+            )
+        except Exception:
+            return None
+        return _assessment_from_payload(p, td, as_of)
+
+    assessment = run()
+    if assessment is None or prior is None:
+        return assessment
+    move = _unexplained_move(assessment, prior.latest.assessment)
+    if move is None:
+        return assessment
+    if on_tool:
+        on_tool("consistency", f"fair value moved {move:+.0%} vs prior with no fundamental change — asking to reconcile")
+    pa = prior.latest.assessment
+    retry = run(review=(
+        f"You submitted fair value ${assessment.fair_value:.2f}, a {move:+.0%} move from the prior "
+        f"${pa.fair_value:.2f} ({prior.latest.as_of}), with fundamental_change=false. Your "
+        f"change_vs_prior said: {assessment.change_vs_prior!r}. A price move is not a fundamental "
+        "change. Either (a) keep the prior assumptions and let the new PRICE flow into upside, "
+        "downside and R/R, or (b) name the specific new fact (reported number, guidance, event, or "
+        "an input error vs the REPORTED FINANCIALS) and set fundamental_change=true."
+    ))
+    if retry is not None:
+        assessment = retry
+        if _unexplained_move(assessment, pa) is None:
+            return assessment
+    if on_tool:
+        on_tool("consistency", f"still unexplained — carrying forward prior fair value ${pa.fair_value:.2f}")
+    return _anchor_to_prior(assessment, pa, prior.latest.as_of)
+
+
+def _unexplained_move(new: ValuationAssessment, old: ValuationAssessment) -> float | None:
+    """The fractional fair-value move if it exceeds the limit WITHOUT a stated
+    fundamental change; None if the move is small, explained, or not comparable."""
+    if new.fundamental_change or not new.fair_value or not old.fair_value:
         return None
+    move = new.fair_value / old.fair_value - 1
+    return move if abs(move) > SETTINGS.max_unexplained_fv_move else None
+
+
+def _anchor_to_prior(
+    new: ValuationAssessment, old: ValuationAssessment, old_as_of: date
+) -> ValuationAssessment:
+    """Keep this run's qualitative read but restore the prior valuation numbers
+    (fair/bear/attention price + inputs), re-measured against TODAY's price — so a
+    falling price widens the margin of safety instead of dragging fair value down."""
+    a = new.model_copy(deep=True)
+    a.fair_value = old.fair_value
+    a.bear_value = old.bear_value
+    a.entry_price = old.entry_price
+    a.key_assumptions = dict(old.key_assumptions)
+    a.anchored_to_prior = True
+    a.valuation_method = (
+        f"[Anchored to {old_as_of} valuation: an unexplained fair-value move was rejected] "
+        + (old.valuation_method or a.valuation_method)
+    )
+    price = a.current_price
+    if price:
+        a.upside_pct = round((a.fair_value / price - 1) * 100, 1)
+        if a.bear_value:
+            a.downside_pct = round((a.bear_value / price - 1) * 100, 1)
+        # This run's R/R was measured against the rejected fair value, so it can't
+        # stand. Re-weight the prior scenarios at today's price; a prior stored
+        # before scenarios were recorded falls back to its own R/R.
+        a.risk_reward = old.risk_reward
+        scen = (old.key_assumptions or {}).get("scenarios")
+        if scen:
+            try:
+                rr = valuation_tools.probability_weighted_value(scen, price).get("reward_risk")
+                a.risk_reward = _clamp_rr(rr)
+            except Exception:
+                pass
+    return a
+
+
+def _assessment_from_payload(p: dict, td: TickerData, as_of: date) -> ValuationAssessment:
     price = td.price
     fair = p.get("fair_value")
     upside = p.get("upside_pct")
@@ -360,10 +446,11 @@ def assess_ticker(
         recommendation=p.get("recommendation", "WATCH"),
         suggested_max_weight=float(p.get("suggested_max_weight", 0.0)),
         confidence=int(p.get("confidence", 3)),
+        key_assumptions=p.get("key_assumptions") if isinstance(p.get("key_assumptions"), dict) else {},
+        change_vs_prior=str(p.get("change_vs_prior", "")),
+        fundamental_change=bool(p.get("fundamental_change", False)),
     )
-    assessment.predictions = _parse_predictions(
-        p.get("predictions", []), td, as_of or date.today()
-    )
+    assessment.predictions = _parse_predictions(p.get("predictions", []), td, as_of)
     return assessment
 
 

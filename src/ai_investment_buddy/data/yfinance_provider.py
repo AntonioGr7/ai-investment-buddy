@@ -123,6 +123,36 @@ class YFinanceFundamentals:
             "prev_close": info.get("previousClose"),
         }
 
+    def valuation_inputs(self, ticker: str) -> dict:
+        """The hard, absolute-dollar numbers a DCF is built on (TTM FCF, revenue,
+        diluted shares, cash, debt, EPS). Keys map onto TickerData. Always sourced
+        here (not split across providers) so definitions stay consistent run to run.
+        Best-effort; {} if unavailable."""
+        try:
+            info = yf.Ticker(ticker).info or {}
+        except Exception:
+            return {}
+
+        def num(*keys):
+            for k in keys:
+                v = info.get(k)
+                if isinstance(v, (int, float)) and v == v:  # not NaN
+                    return float(v)
+            return None
+
+        out = {
+            "free_cashflow": num("freeCashflow"),
+            "revenue": num("totalRevenue"),
+            "ebitda": num("ebitda"),
+            "operating_cashflow": num("operatingCashflow"),
+            "shares_outstanding": num("impliedSharesOutstanding", "sharesOutstanding"),
+            "total_cash": num("totalCash"),
+            "total_debt": num("totalDebt"),
+            "trailing_eps": num("trailingEps"),
+            "forward_eps": num("forwardEps"),
+        }
+        return {k: v for k, v in out.items() if v is not None}
+
     def metrics(self, ticker: str) -> dict:
         """A RICH, display-oriented metric set for the company report (trailing +
         forward where available). Raw numbers; the frontend formats/labels them.

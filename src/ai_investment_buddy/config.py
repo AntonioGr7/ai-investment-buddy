@@ -138,6 +138,13 @@ class Settings:
     # A price move beyond this (fraction) since the last valuation forces a fresh
     # look — the upside vs fair value has materially changed.
     revaluation_price_move: float = 0.10
+    # A fresh valuation is shown its prior read (if made within this many days)
+    # and must explain any fair-value move beyond `max_unexplained_fv_move` with a
+    # FUNDAMENTAL change. Otherwise it's asked once to reconcile, and if it still
+    # can't, the prior numbers are carried forward — so fair value stops swinging
+    # on re-guessed inputs and sampling noise (APP: $379 → $181 → $319 in 3 weeks).
+    prior_anchor_days: int = 60
+    max_unexplained_fv_move: float = 0.10
 
     # --- Risk guardrails (the AI is asked to respect these; execution enforces) ---
     max_position_weight: float = 0.20  # no single name above 20% of NAV

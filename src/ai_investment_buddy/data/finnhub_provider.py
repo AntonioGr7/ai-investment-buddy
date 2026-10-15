@@ -200,6 +200,11 @@ class FinnhubFundamentals:
                 out["recommendation"] = label
         return out
 
+    def valuation_inputs(self, ticker: str) -> dict:
+        """Hard DCF inputs for finalists — delegated to yfinance so the definitions
+        don't change when Finnhub's quota runs out and fundamentals fall back."""
+        return _yf_fundamentals().valuation_inputs(ticker)
+
     def metrics(self, ticker: str) -> dict:
         """Rich display metrics for the company report. Delegated to yfinance: it
         returns the full multiple/profitability/growth set in one free call, where

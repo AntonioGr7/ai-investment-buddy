@@ -12,6 +12,7 @@ It is part of state: the directory travels in export/import snapshots.
 
 from __future__ import annotations
 
+import re
 from datetime import date
 from pathlib import Path
 
@@ -177,6 +178,35 @@ def add_note(ticker: str, note: InvestorNote) -> bool:
     return True
 
 
+# Headlines that can move intrinsic value (results, guidance, deals, capital
+# structure, regulation, leadership) — as opposed to the daily churn of "stock
+# falls X%" / "3 AI stocks to buy" pieces. Only these invalidate a cached read.
+_MATERIAL_NEWS = re.compile(
+    r"\b(earnings|results|quarter(ly)?|q[1-4]\b|guidance|outlook|forecast|revenue|"
+    r"profit|loss|beats?|miss(es|ed)?|raises?|cuts?|lowers?|"
+    r"acqui(re|res|red|sition)|merger|takeover|buyout|divest|spin-?off|"
+    r"buyback|repurchase|dividend|offering|dilution|convertible|debt|bankrupt|"
+    r"downgrade|upgrade|sec\b|ftc|doj|antitrust|probe|investigation|lawsuit|"
+    r"fraud|short.seller|restate|ceo|cfo|resign|layoffs?|recall|ban)",
+    re.IGNORECASE,
+)
+
+
+def is_material_headline(headline: str) -> bool:
+    return bool(_MATERIAL_NEWS.search(headline or ""))
+
+
+def prior_for_anchor(ticker: str, today: date) -> ValuationRecord | None:
+    """The stored record a fresh valuation should be reconciled against, or None
+    when there's no prior or it's too old to anchor on (stale → value afresh)."""
+    rec = load(ticker)
+    if rec is None or rec.latest.assessment.fair_value is None:
+        return None
+    if (today - rec.latest.as_of).days > SETTINGS.prior_anchor_days:
+        return None
+    return rec
+
+
 def find_reusable(
     ticker: str,
     current_price: float | None,
@@ -185,9 +215,11 @@ def find_reusable(
 ) -> tuple[ValuationAssessment, date] | None:
     """Return (assessment, last_assessed) if a recent valuation can be reused as-is.
 
-    Reusable only when: assessed within the TTL, no NEW headlines since, price has
-    not moved materially, and no investor note has challenged the thesis since the
-    last analysis. Otherwise None → caller should run a fresh valuation."""
+    Reusable only when: assessed within the TTL, no NEW *material* headlines since
+    (results, guidance, deals... — see ``_MATERIAL_NEWS``; routine price-move
+    pieces don't count, or the rolling news window would force a re-run daily),
+    price has not moved materially, and no investor note has challenged the thesis
+    since the last analysis. Otherwise None → caller should run a fresh valuation."""
     rec = load(ticker)
     if rec is None:
         return None
@@ -200,7 +232,7 @@ def find_reusable(
             return None
     stored = rec.latest
     seen = set(stored.news_seen)
-    if any(h not in seen for h in (current_headlines or [])):
+    if any(h not in seen and is_material_headline(h) for h in (current_headlines or [])):
         return None
     prior_px = stored.assessment.current_price
     if prior_px and current_price:

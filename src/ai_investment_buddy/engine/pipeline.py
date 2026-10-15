@@ -412,6 +412,7 @@ def run_daily(
         calibration_summary=calibration_summary,
         force_revaluation=force_revaluation,
         news_fetcher=providers.news.headlines,
+        inputs_fetcher=providers.fundamentals.valuation_inputs,
         toolkit=toolkit,
         on_progress=progress,
     )

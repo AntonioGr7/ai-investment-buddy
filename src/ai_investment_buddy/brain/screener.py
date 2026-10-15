@@ -211,11 +211,28 @@ def screen(
     return shortlist
 
 
+def attach_valuation_inputs(td: TickerData, fetcher) -> TickerData:
+    """Fill a finalist's hard DCF inputs (FCF, revenue, shares, cash, debt, EPS)
+    via ``fetcher(ticker) -> dict``. These OVERWRITE screener-time values so every
+    run reads the same source. Best-effort: a failed fetch leaves ``td`` as is."""
+    if fetcher is None:
+        return td
+    try:
+        f = fetcher(td.ticker) or {}
+    except Exception:
+        return td
+    for k, v in f.items():
+        if v is not None and hasattr(td, k):
+            setattr(td, k, v)
+    return td
+
+
 def enrich(
     tickers: list[str],
     metrics: dict[str, TickerData],
     providers,
     with_news: bool = True,
+    with_valuation_inputs: bool = False,
 ) -> list[TickerData]:
     """Attach fundamentals (and optionally headlines) to the shortlist.
 
@@ -231,5 +248,7 @@ def enrich(
                 setattr(td, k, v)
         if with_news:
             td.headlines = providers.news.headlines(t, limit=4)
+        if with_valuation_inputs:
+            attach_valuation_inputs(td, providers.fundamentals.valuation_inputs)
         enriched.append(td)
     return enriched

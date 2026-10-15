@@ -76,6 +76,54 @@ def fmt_ticker(td: TickerData) -> str:
     return line
 
 
+def fmt_valuation_inputs(td: TickerData) -> str:
+    """The hard DCF inputs, in MILLIONS (the valuation tools' unit), or "" if none
+    were fetched. Net debt is derived (negative = net cash)."""
+    def m(v):
+        return f"{v/1e6:,.0f}" if v is not None else None
+
+    rows = [
+        ("TTM free cash flow ($M)", m(td.free_cashflow)),
+        ("TTM operating cash flow ($M)", m(td.operating_cashflow)),
+        ("TTM revenue ($M)", m(td.revenue)),
+        ("TTM EBITDA ($M)", m(td.ebitda)),
+        ("Shares outstanding (M)", f"{td.shares_outstanding/1e6:,.1f}" if td.shares_outstanding else None),
+        ("Total cash ($M)", m(td.total_cash)),
+        ("Total debt ($M)", m(td.total_debt)),
+    ]
+    if td.total_cash is not None and td.total_debt is not None:
+        rows.append(("Net debt ($M, negative = net cash)", m(td.total_debt - td.total_cash)))
+    rows += [
+        ("Trailing EPS", f"{td.trailing_eps:.2f}" if td.trailing_eps is not None else None),
+        ("Forward EPS", f"{td.forward_eps:.2f}" if td.forward_eps is not None else None),
+    ]
+    lines = [f"  {k}: {v}" for k, v in rows if v is not None]
+    return "\n".join(lines)
+
+
+def fmt_prior_valuation(rec) -> str:
+    """The last stored read on this name (a ValuationRecord) — numbers, the inputs
+    behind them, and the recent fair-value trail — for the analyst to reconcile to."""
+    a = rec.latest.assessment
+    lines = [
+        f"As of {rec.latest.as_of} (price then ${a.current_price or 0:.2f}): "
+        f"fair ${a.fair_value:.2f}, bear ${a.bear_value or 0:.2f}, "
+        f"attention ${a.entry_price or 0:.2f}, R/R {a.risk_reward}, "
+        f"{a.recommendation}, conf {a.confidence}/5, structural risk {a.structural_risk}.",
+    ]
+    if a.key_assumptions:
+        lines.append("Key assumptions: " + json.dumps(a.key_assumptions))
+    else:
+        lines.append(f"Method (no structured inputs stored): {a.valuation_method}")
+    trail = [
+        f"{h.as_of}: ${h.assessment.fair_value:.0f} @ px ${h.assessment.current_price or 0:.0f}"
+        for h in (rec.history[-5:] + [rec.latest]) if h.assessment.fair_value
+    ]
+    if len(trail) > 1:
+        lines.append("Fair-value trail: " + " → ".join(trail))
+    return "\n".join(lines)
+
+
 # =============================================================================
 # Stage 1 — Strategist
 # =============================================================================
@@ -277,6 +325,19 @@ prudent either. An honest bear for a fortress compounder may be -15%; for a leve
 turnaround it may be -70%. Both are correct when the business justifies them. Reward/risk weights \
 BOTH sides by your probabilities, so an inflated bear silently destroys real opportunities.
 Inputs you don't have, ESTIMATE with stated reasoning. Cross-check at least two methods.
+HARD INPUTS: when REPORTED FINANCIALS are provided, they are your starting point — base cash \
+flow, shares and net debt come from them, not from memory or a headline. You may NORMALIZE (strip \
+a one-off, use a forward run-rate after a reported step-change), but say exactly how and why in \
+key_assumptions.notes. Record the numbers you actually used in key_assumptions.
+
+CONSISTENCY WITH YOUR PRIOR VALUATION: intrinsic value moves slowly; prices move daily. When a \
+PRIOR VALUATION is shown, START from its assumptions and change an input only for a FUNDAMENTAL \
+reason you can name: reported results, guidance, a new reported financial, a deal, a regulatory or \
+competitive event, or a corrected input error (e.g. its FCF disagrees with the reported figure). \
+A lower or higher share price, sector sentiment, or 'the market keeps falling' is NOT a reason to \
+change fair value — it changes the UPSIDE and the margin of safety, which is the whole point. Fill \
+change_vs_prior with what changed and why, and set fundamental_change=true only for a real change \
+in the business or a corrected input. A fair-value move beyond ~10% without one will be rejected.
 
 Method:
 1. CLASSIFY THE BUSINESS first, because the right valuation method depends on what it is. Pick an \
@@ -453,6 +514,47 @@ ANALYST_TOOL = {
                 "description": "Suggested cap on this name as a fraction of NAV.",
             },
             "confidence": {"type": "integer", "minimum": 1, "maximum": 5},
+            "key_assumptions": {
+                "type": "object",
+                "description": "The numeric inputs behind fair_value (millions for $ and shares, "
+                "percent for rates). Stored and shown to you next time as the starting point.",
+                "properties": {
+                    "base_cash_flow_m": {"type": "number", "description": "Starting annual FCF/owner earnings used ($M)."},
+                    "growth_rate_pct": {"type": "number"},
+                    "growth_years": {"type": "integer"},
+                    "terminal_growth_pct": {"type": "number"},
+                    "discount_rate_pct": {"type": "number"},
+                    "shares_outstanding_m": {"type": "number"},
+                    "net_debt_m": {"type": "number", "description": "Negative = net cash."},
+                    "exit_multiple": {"type": "number", "description": "If an exit-multiple method was used."},
+                    "scenarios": {
+                        "type": "array",
+                        "description": "The bear/base/bull values and probabilities you weighted.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "label": {"type": "string"},
+                                "value": {"type": "number"},
+                                "probability": {"type": "number"},
+                            },
+                            "required": ["label", "value", "probability"],
+                        },
+                    },
+                    "notes": {"type": "string", "description": "Any normalization of the reported inputs, and why."},
+                },
+                "required": ["scenarios"],
+            },
+            "change_vs_prior": {
+                "type": "string",
+                "description": "vs the PRIOR VALUATION shown: which inputs you changed and the "
+                "specific fundamental reason. 'First valuation' if none was shown.",
+            },
+            "fundamental_change": {
+                "type": "boolean",
+                "description": "True ONLY if fair value moved because of a real change in the "
+                "business (results, guidance, deal, competitive/regulatory event) or a corrected "
+                "input error. A price move alone is never a fundamental change.",
+            },
             "predictions": {
                 "type": "array",
                 "description": "0-2 explicit, falsifiable forecasts where you hold a genuine variant view vs consensus. Empty if you have no real edge over the market's expectation.",
@@ -481,6 +583,7 @@ ANALYST_TOOL = {
             "news_sentiment", "news_assessment",
             "bull_case", "bear_case", "key_risks", "recommendation",
             "suggested_max_weight", "confidence",
+            "key_assumptions", "change_vs_prior", "fundamental_change",
         ],
     },
 }
@@ -494,6 +597,8 @@ def build_analyst_message(
     dossier: str = "",
     investor_notes: str = "",
     calibration: str = "",
+    prior=None,
+    review: str = "",
 ) -> str:
     parts = [f"=== VALUATION: {td.ticker} ({td.name or '?'}) ==="]
     parts.append(f"\nMARKET REGIME: {regime}")
@@ -520,12 +625,20 @@ def build_analyst_message(
         parts.append(dossier)
     parts.append("\n--- COMPANY DATA ---")
     parts.append(fmt_ticker(td))
+    inputs = fmt_valuation_inputs(td)
+    parts.append("\n--- REPORTED FINANCIALS (your DCF starting point; millions) ---")
+    parts.append(inputs or "  (not available — estimate, state your basis, and lower confidence)")
+    parts.append("\n--- PRIOR VALUATION (reconcile to this; see CONSISTENCY rule) ---")
+    parts.append(fmt_prior_valuation(prior) if prior is not None else "  None on file — first valuation.")
     parts.append("\n--- RECENT NEWS (your post-selection due diligence) ---")
     if td.headlines:
         for h in td.headlines:
             parts.append(f"  - {h}")
     else:
         parts.append("  (no recent headlines retrieved — weight news lightly)")
+    if review:
+        parts.append("\n--- REVIEW OF YOUR PREVIOUS SUBMISSION (fix this) ---")
+        parts.append(review)
     parts.append(
         "\nEstimate fair value, judge the news & sentiment, and assess. "
         "Call submit_assessment exactly once."

@@ -55,6 +55,7 @@ class DecisionEngine:
         industry_scan: str = "",
         force_revaluation: bool = False,
         news_fetcher=None,
+        inputs_fetcher=None,
         toolkit: MemoryToolkit | None = None,
         on_progress=None,
     ) -> BrainResult:
@@ -79,6 +80,7 @@ class DecisionEngine:
             "calibration_summary": calibration_summary,
             "force_revaluation": force_revaluation,
             "news_fetcher": news_fetcher,
+            "inputs_fetcher": inputs_fetcher,
             "toolkit": toolkit or MemoryToolkit(),
             "progress": on_progress,
         }

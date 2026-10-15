@@ -38,6 +38,11 @@ class FundamentalsProvider(Protocol):
         ``fundamentals`` (the lean analyst input). Best-effort; {} if unavailable."""
         ...
 
+    def valuation_inputs(self, ticker: str) -> dict:
+        """Hard, absolute-dollar DCF inputs (FCF, revenue, shares, cash, debt, EPS;
+        keys map onto TickerData), fetched for finalists. Best-effort; {} if unavailable."""
+        ...
+
 
 @runtime_checkable
 class NewsProvider(Protocol):

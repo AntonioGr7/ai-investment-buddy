@@ -78,6 +78,19 @@ class TickerData(BaseModel):
     target_mean_price: float | None = None
     recommendation: str | None = None
 
+    # Hard valuation inputs (absolute currency / share counts), fetched for
+    # finalists only. Without these the analyst had to GUESS base FCF, shares and
+    # net cash each run — the APP case: "$1.8B FCF" one day, "$3.0B" two weeks
+    # later — which swung fair value ~2× on near-identical prices.
+    revenue: float | None = None
+    ebitda: float | None = None
+    operating_cashflow: float | None = None
+    shares_outstanding: float | None = None
+    total_cash: float | None = None
+    total_debt: float | None = None
+    trailing_eps: float | None = None
+    forward_eps: float | None = None
+
     # Qualitative.
     headlines: list[str] = Field(default_factory=list)
 
@@ -322,6 +335,17 @@ class ValuationAssessment(BaseModel):
     recommendation: str = "WATCH"
     suggested_max_weight: float = Field(default=0.0, ge=0.0, le=1.0)
     confidence: int = Field(default=3, ge=1, le=5)
+    # The numeric inputs behind fair_value (base cash flow, growth, discount rate,
+    # shares, net debt, scenario values/probabilities...). Persisted so the NEXT
+    # valuation starts from these rather than re-guessing them from scratch.
+    key_assumptions: dict = Field(default_factory=dict)
+    # What changed vs the prior valuation, and whether it was a genuine change in
+    # the business (earnings, guidance, competitive shift) — a price move alone is not.
+    change_vs_prior: str = ""
+    fundamental_change: bool = False
+    # True when the analyst moved fair value materially without a fundamental
+    # reason and the prior valuation's numbers were carried forward instead.
+    anchored_to_prior: bool = False
     # Transient runtime flag: True if this came from the valuation cache (a recent
     # assessment reused because nothing material changed) rather than a fresh
     # model call. Not meaningful once persisted.

@@ -854,7 +854,7 @@ def valuate(
         meta = {t: uni.get(t, {"ticker": t}) for t in tickers}
         metrics = screener.compute_metrics(history, meta)
         status.update("Fetching fundamentals + news…")
-        enriched = screener.enrich(tickers, metrics, providers)
+        enriched = screener.enrich(tickers, metrics, providers, with_valuation_inputs=True)
 
         regime, thesis = Journal().latest_strategy()
         positions = {}
